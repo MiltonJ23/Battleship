@@ -1176,30 +1176,49 @@ let specGameId = "";
 
 function renderSpectate() {
   app.innerHTML = `<div class="spectate-screen">
-    <header class="battle-header">
+    <header class="battle-header spec-header">
       <span class="vs-text">${esc(specP1)} <span class="vs">VS</span> ${esc(specP2)}</span>
-      <button id="unspectate-btn" class="btn-danger">Quitter</button>
+      <span class="wager-badge">💰 ${wager} pts</span>
+      <button id="unspectate-btn" class="btn-danger">✕ Quitter</button>
     </header>
     <div class="turn-indicator">Tour de ${esc(specTurnName)}</div>
-    <div class="spectate-grids">
-      <div class="battle-section"><h3>${esc(specP1)}</h3><div id="spec-grid-1" class="grid spec-grid"></div></div>
-      <div class="battle-section"><h3>${esc(specP2)}</h3><div id="spec-grid-2" class="grid spec-grid"></div></div>
-    </div>
-    <div class="spec-bets card">
-      <h3>🎲 Paris en direct</h3>
-      <div id="spec-odds" class="spec-odds-row"></div>
-      <div id="spec-bet-btns" class="spec-bet-btns"></div>
-    </div>
-    <div class="spec-events card">
-      <h3>📡 Événements</h3>
-      <div id="spec-events" class="spec-event-list"></div>
-    </div>
-    <div class="chat-panel panel">
-      <h3>💬 Chat spectateurs</h3>
-      <div id="chat-messages" class="chat-msgs"></div>
-      <div class="chat-input">
-        <input id="chat-inp" type="text" placeholder="Votre message..." maxlength="300" autocomplete="off" />
-        <button id="chat-send-btn">➤</button>
+    <div class="spec-grids-layout">
+      <div class="spec-grid-col">
+        <h3 class="spec-col-title">🛡️ ${esc(specP1)}</h3>
+        <div id="spec-grid-1" class="grid spec-grid"></div>
+      </div>
+      <div class="spec-grid-col">
+        <h3 class="spec-col-title">🎯 ${esc(specP2)}</h3>
+        <div id="spec-grid-2" class="grid spec-grid"></div>
+        <div class="spec-events card">
+          <h3>📡 Derniers événements</h3>
+          <div id="spec-events" class="spec-event-list"></div>
+        </div>
+      </div>
+      <div class="spec-bet-col">
+        <div class="spec-bets card">
+          <h3>🎲 Bureau des paris</h3>
+          <div class="spec-odds-box">
+            <div class="odd-card pick0" id="odd-card-0">
+              <span>${esc(specP1)}</span>
+              <span class="odd-val" id="odd-val-0">--x</span>
+            </div>
+            <div class="odd-vs">VS</div>
+            <div class="odd-card pick1" id="odd-card-1">
+              <span>${esc(specP2)}</span>
+              <span class="odd-val" id="odd-val-1">--x</span>
+            </div>
+          </div>
+          <div id="spec-bet-btns" class="spec-bet-btns"></div>
+        </div>
+        <div class="chat-panel panel">
+          <h3>💬 Chat spectateurs</h3>
+          <div id="chat-messages" class="chat-msgs"></div>
+          <div class="chat-input">
+            <input id="chat-inp" type="text" placeholder="Votre message..." maxlength="300" autocomplete="off" />
+            <button id="chat-send-btn">➤</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>`;
@@ -1240,14 +1259,34 @@ function renderSpecEvents() {
 }
 
 function renderSpecOdds() {
-  const oddsEl = document.getElementById("spec-odds"), btnEl = document.getElementById("spec-bet-btns");
-  if (!oddsEl || !btnEl || !specOdds) return;
-  oddsEl.innerHTML = `<span class="odd-chip">${esc(specP1)}: ${specOdds.odds0}x</span><span class="odd-chip">${esc(specP2)}: ${specOdds.odds1}x</span>`;
+  const btnEl = document.getElementById("spec-bet-btns");
+  if (!btnEl || !specOdds) return;
+  // update odds display
+  const odd0 = document.getElementById("odd-val-0");
+  const odd1 = document.getElementById("odd-val-1");
+  if (odd0) odd0.textContent = specOdds.odds0 + "x";
+  if (odd1) odd1.textContent = specOdds.odds1 + "x";
+  const oddCard0 = document.getElementById("odd-card-0");
+  const oddCard1 = document.getElementById("odd-card-1");
+  if (oddCard0) oddCard0.className = "odd-card pick0" + (specOdds.odds0 > specOdds.odds1 ? " favorite" : "");
+  if (oddCard1) oddCard1.className = "odd-card pick1" + (specOdds.odds1 > specOdds.odds0 ? " favorite" : "");
+
   btnEl.innerHTML = `
-    <button class="btn-bet" data-kind="match_winner" data-pick="1">Parier sur ${esc(specP1)}</button>
-    <button class="btn-bet" data-kind="match_winner" data-pick="2">Parier sur ${esc(specP2)}</button>
-    <button class="btn-bet" data-kind="next_hit" data-pick="1">Prochain hit: ${esc(specP1)}</button>
-    <button class="btn-bet" data-kind="next_hit" data-pick="2">Prochain hit: ${esc(specP2)}</button>
+    <button class="btn-bet btn-bet-main" data-kind="match_winner" data-pick="1">
+      🏆 Miser sur ${esc(specP1)}
+      <span class="btn-bet-odds">${specOdds.odds0}x</span>
+    </button>
+    <button class="btn-bet btn-bet-main" data-kind="match_winner" data-pick="2">
+      🏆 Miser sur ${esc(specP2)}
+      <span class="btn-bet-odds">${specOdds.odds1}x</span>
+    </button>
+    <div class="bet-separator">Paris express</div>
+    <button class="btn-bet btn-bet-quick" data-kind="next_hit" data-pick="1">
+      🎯 Prochain hit: ${esc(specP1)}
+    </button>
+    <button class="btn-bet btn-bet-quick" data-kind="next_hit" data-pick="2">
+      🎯 Prochain hit: ${esc(specP2)}
+    </button>
   `;
   btnEl.querySelectorAll(".btn-bet").forEach(b => b.addEventListener("click", () => {
     const kind = (b as HTMLElement).dataset.kind!, pick = parseInt((b as HTMLElement).dataset.pick!);

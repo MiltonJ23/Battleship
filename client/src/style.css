@@ -1219,3 +1219,157 @@ select {
   .join-chat { max-width: 100%; }
   .turn-indicator { width: 100%; text-align: center; }
 }
+
+/* ═══ SPECTATE / BETTING UI ═══ */
+
+.spec-grids-layout {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.spec-grid-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+.spec-col-title {
+  font-size: 13px;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  text-align: center;
+}
+.spec-bet-col {
+  min-width: 250px;
+  max-width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.spec-grid { width: min(42vw, 340px); }
+
+/* ODD CARDS */
+.spec-odds-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.odd-card {
+  flex: 1;
+  background: rgba(0, 40, 80, 0.5);
+  border: 2px solid transparent;
+  border-radius: 14px;
+  padding: 12px 14px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 13px;
+  transition: all 0.3s;
+}
+.odd-card.pick0 { border-color: #00b8cc; }
+.odd-card.pick1 { border-color: #ff2d78; }
+.odd-card.favorite {
+  box-shadow: 0 0 16px rgba(255, 215, 0, 0.4);
+  border-color: var(--gold);
+  background: rgba(255, 215, 0, 0.08);
+}
+.odd-val {
+  display: block;
+  font-family: "Orbitron", sans-serif;
+  font-size: 22px;
+  margin-top: 4px;
+}
+.odd-card.pick0 .odd-val { color: var(--cyan); }
+.odd-card.pick1 .odd-val { color: var(--pink); }
+.odd-card.favorite .odd-val { color: var(--gold); }
+.odd-vs {
+  font-family: "Orbitron", sans-serif;
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* BET BUTTONS */
+.btn-bet {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-align: left;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.12s, filter 0.2s, box-shadow 0.2s;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.btn-bet:hover { transform: translateY(-1px); filter: brightness(1.15); }
+.btn-bet:active { transform: scale(0.98); }
+
+.btn-bet-main {
+  background: linear-gradient(135deg, #1a4a70, #0a2a40);
+  border: 1px solid rgba(0, 240, 255, 0.3);
+  color: var(--cyan);
+  margin-bottom: 6px;
+}
+.btn-bet-main:hover {
+  border-color: var(--cyan);
+  box-shadow: 0 0 20px rgba(0, 240, 255, 0.2);
+}
+.btn-bet-odds {
+  background: rgba(0, 240, 255, 0.2);
+  color: var(--cyan);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 13px;
+  font-family: "Orbitron", sans-serif;
+}
+.bet-separator {
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 6px 0;
+  padding: 4px 0;
+  border-top: 1px solid var(--panel-border);
+}
+.btn-bet-quick {
+  background: rgba(0, 40, 80, 0.5);
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  margin-bottom: 5px;
+  font-size: 13px;
+}
+.btn-bet-quick:hover {
+  border-color: var(--gold);
+  box-shadow: 0 0 14px rgba(255, 215, 0, 0.15);
+}
+
+/* SPEC EVENTS */
+.spec-events { width: 100%; }
+.spec-event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.spec-event {
+  font-size: 13px;
+  padding: 4px 8px;
+  background: rgba(0, 40, 80, 0.35);
+  border-radius: 6px;
+  border-left: 2px solid var(--cyan-dim);
+}
+
+@media (max-width: 900px) {
+  .spec-grids-layout { flex-direction: column; align-items: center; }
+  .spec-grid { width: min(90vw, 400px); }
+  .spec-bet-col { max-width: 100%; width: 100%; }
+}
