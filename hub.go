@@ -20,6 +20,7 @@ type Hub struct {
 	conns      map[*Client]bool
 	challenges map[string][]*Challenge
 	games      map[string]*Game
+	bank       *Bank
 	mu         sync.Mutex
 	gameIDSeq  int
 }
@@ -31,6 +32,7 @@ func NewHub(store *Store) *Hub {
 		conns:      make(map[*Client]bool),
 		challenges: make(map[string][]*Challenge),
 		games:      make(map[string]*Game),
+		bank:       NewBank(store),
 	}
 }
 
@@ -95,7 +97,24 @@ func (h *Hub) forfeitGame(c *Client) {
 		game.mu.Unlock()
 
 		logInfo("game", "forfeit game=%s loser=%s winner=%s wager=%d", gameID, c.Name, oppName, game.Wager)
-		h.store.UpdateAfterGame(oppName, c.Name, game.Wager)
+		// refund wager since it was a forfeit during active play, not a normal end
+		// but the wager was deducted on challenge accept. Let's just not double-deduct.
+		game.mu.Unlock()
+
+		// resolve match winner bets
+		winnerPick := PickPlayer0
+		if oppIdx == 1 {
+			winnerPick = PickPlayer1
+		}
+		resolved := game.Bets.ResolveMatchWinner(winnerPick)
+		for _, b := range resolved {
+			if b.Player == "banque" {
+				continue
+			}
+			if b.Won {
+				h.store.AddPoints(b.Player, int(float64(b.Amount)*b.Odds))
+			}
+		}
 
 		if oppClient, ok := h.clients[oppName]; ok {
 			oppClient.sendJSON(map[string]interface{}{
@@ -107,6 +126,14 @@ func (h *Hub) forfeitGame(c *Client) {
 			})
 			oppClient.GameID = ""
 		}
+
+		// notify spectators
+		h.notifySpectators(game, map[string]interface{}{
+			"type":   "game_over",
+			"winner": oppName,
+			"reason": "forfeit",
+		})
+		h.kickSpectators(game)
 	} else {
 		game.mu.Unlock()
 		oppIdx := 1 - game.PlayerIndex(c.Name)
@@ -118,6 +145,19 @@ func (h *Hub) forfeitGame(c *Client) {
 	}
 	c.GameID = ""
 	delete(h.games, gameID)
+}
+
+func (h *Hub) notifySpectators(game *Game, msg map[string]interface{}) {
+	for _, sp := range game.Spectators {
+		sp.sendJSON(msg)
+	}
+}
+
+func (h *Hub) kickSpectators(game *Game) {
+	for _, sp := range game.Spectators {
+		sp.sendJSON(map[string]string{"type": "spectate_end"})
+		sp.GameID = ""
+	}
 }
 
 func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMessage) {
@@ -358,6 +398,18 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 		}
 
 		if res.GameOver {
+			winnerPick := PickPlayer1
+			if playerIdx == 0 {
+				winnerPick = PickPlayer0
+			}
+			matchBets := game.Bets.ResolveMatchWinner(winnerPick)
+			for _, b := range matchBets {
+				if b.Won && b.Player != "banque" {
+					h.store.AddPoints(b.Player, int(float64(b.Amount)*b.Odds))
+				}
+			}
+			h.broadcastToSpectators(game, map[string]interface{}{"type": "bets_resolved", "kind": "match_winner", "bets": matchBets})
+			h.kickSpectators(game)
 			h.finishGame(game, playerIdx, c.GameID)
 		}
 
@@ -387,6 +439,34 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 				sunkShip = res.SunkShip.Name
 			}
 		}
+		game.AddEvent(GameEvent{Type: "fire", Player: playerIdx, Data: map[string]interface{}{"x": res.Col, "y": res.Row, "result": resultType, "ship": sunkShip}})
+
+		// resolve bets
+		betResolved := []*Bet{}
+		if res.Hit {
+			resolved := game.Bets.ResolveByEvent(BetNextHit, BetPick(playerIdx+1))
+			for _, b := range resolved {
+				if b.Won {
+					gain := int(float64(b.Amount) * b.Odds)
+					if b.Player != "banque" {
+						h.store.AddPoints(b.Player, gain)
+					}
+				}
+				betResolved = append(betResolved, b)
+			}
+		}
+		if res.Sunk {
+			resolved := game.Bets.ResolveByEvent(BetNextSunk, BetPick(playerIdx+1))
+			for _, b := range resolved {
+				if b.Won {
+					gain := int(float64(b.Amount) * b.Odds)
+					if b.Player != "banque" {
+						h.store.AddPoints(b.Player, gain)
+					}
+				}
+				betResolved = append(betResolved, b)
+			}
+		}
 
 		for i, name := range game.Players {
 			if pc, ok := h.clients[name]; ok {
@@ -404,7 +484,47 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 		}
 
 		if res.GameOver {
+			// resolve match winner bets
+			winnerPick := PickPlayer1
+			if playerIdx == 0 {
+				winnerPick = PickPlayer0
+			}
+			matchBets := game.Bets.ResolveMatchWinner(winnerPick)
+			for _, b := range matchBets {
+				if b.Won && b.Player != "banque" {
+					h.store.AddPoints(b.Player, int(float64(b.Amount)*b.Odds))
+					if pc, ok := h.clients[b.Player]; ok {
+						pc.sendJSON(map[string]interface{}{
+							"type":   "bet_won",
+							"kind":   string(b.Kind),
+							"amount": int(float64(b.Amount) * b.Odds),
+						})
+					}
+				}
+			}
+			h.broadcastToSpectators(game, map[string]interface{}{"type": "bets_resolved", "kind": "match_winner", "bets": matchBets})
+			h.kickSpectators(game)
 			h.finishGame(game, playerIdx, c.GameID)
+		}
+
+		if len(betResolved) > 0 {
+			h.broadcastToSpectators(game, map[string]interface{}{"type": "bets_resolved", "kind": "fire_event", "bets": betResolved})
+		}
+
+		h.broadcastToSpectators(game, map[string]interface{}{
+			"type":     "spectate_fire",
+			"x":        res.Col,
+			"y":        res.Row,
+			"result":   resultType,
+			"ship":     sunkShip,
+			"shooter":  playerIdx,
+			"turn":     game.Turn,
+			"turnName": game.Players[game.Turn],
+			"p1Ships":  game.ShipsLeft(0),
+			"p2Ships":  game.ShipsLeft(1),
+		})
+		if !res.GameOver {
+			h.updateSpectatorsOdds(game)
 		}
 
 	case "rematch":
@@ -511,6 +631,144 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 				"repaid":      rec.Repaid,
 			})
 		}
+
+	case "live_matches":
+		var matches []map[string]interface{}
+		for id, g := range h.games {
+			if g.Phase == PhasePlacement || g.Phase == PhaseBattle {
+				g.mu.Lock()
+				matches = append(matches, map[string]interface{}{
+					"id":       id,
+					"p1":       g.Players[0],
+					"p2":       g.Players[1],
+					"phase":    g.Phase == PhasePlacement,
+					"wager":    g.Wager,
+					"turn":     g.Turn,
+					"turnName": g.Players[g.Turn],
+					"p1Ships":  g.ShipsLeft(0),
+					"p2Ships":  g.ShipsLeft(1),
+					"spectators": len(g.Spectators),
+				})
+				g.mu.Unlock()
+			}
+		}
+		c.sendJSON(map[string]interface{}{"type": "live_matches", "matches": matches})
+
+	case "spectate":
+		gameID := getStr("gameId")
+		game, ok := h.games[gameID]
+		if !ok || game.Phase == PhaseOver {
+			return
+		}
+		// remove from any previous spectate
+		for _, g := range h.games {
+			delete(g.Spectators, c.Name)
+		}
+		game.Spectators[c.Name] = c
+		c.GameID = gameID
+		logInfo("spectate", "player=%s game=%s spectators=%d", c.Name, gameID, len(game.Spectators))
+
+		// send full board state
+		c.sendJSON(map[string]interface{}{
+			"type":     "spectate_start",
+			"p1":       game.Players[0],
+			"p2":       game.Players[1],
+			"wager":    game.Wager,
+			"turn":     game.Turn,
+			"turnName": game.Players[game.Turn],
+			"p1Ships":  game.ShipsLeft(0),
+			"p2Ships":  game.ShipsLeft(1),
+			"board1":   game.Boards[0].Grid,
+			"board2":   game.Boards[1].Grid,
+			"events":   game.RecentEvents(30),
+			"openBets": game.Bets.OpenBetsByKind(""),
+		})
+		// send odds
+		o0, o1 := h.bank.oe.CalcMatchOdds(game)
+		c.sendJSON(map[string]interface{}{"type": "odds", "kind": "match_winner", "odds0": o0, "odds1": o1})
+
+	case "unspectate":
+		gameID := c.GameID
+		if game, ok := h.games[gameID]; ok {
+			delete(game.Spectators, c.Name)
+			logInfo("spectate", "player=%s left game=%s", c.Name, gameID)
+		}
+		c.GameID = ""
+		c.sendJSON(map[string]string{"type": "spectate_end"})
+
+	case "bet":
+		gameID := getStr("gameId")
+		kind := BetKind(getStr("kind"))
+		pick := BetPick(getInt("pick"))
+		amount := getInt("amount")
+		game, ok := h.games[gameID]
+		if !ok || game.Phase == PhasePlacement || game.Phase == PhaseOver {
+			c.sendJSON(map[string]string{"type": "error", "message": "Match indisponible pour les paris"})
+			return
+		}
+		if pick != PickPlayer0 && pick != PickPlayer1 {
+			c.sendJSON(map[string]string{"type": "error", "message": "Choix invalide"})
+			return
+		}
+		if amount < 5 || amount > 500 {
+			c.sendJSON(map[string]string{"type": "error", "message": "Mise entre 5 et 500 pts"})
+			return
+		}
+		rec := h.store.GetOrCreate(c.Name)
+		if rec.Points < amount {
+			c.sendJSON(map[string]string{"type": "error", "message": "Points insuffisants"})
+			return
+		}
+		var odds float64
+		switch kind {
+		case BetMatchWinner:
+			o0, o1 := h.bank.oe.CalcMatchOdds(game)
+			if pick == PickPlayer0 {
+				odds = o0
+			} else {
+				odds = o1
+			}
+		case BetNextHit:
+			o0, o1 := h.bank.oe.CalcNextHitOdds(game)
+			if pick == PickPlayer0 {
+				odds = o0
+			} else {
+				odds = o1
+			}
+		case BetNextSunk:
+			o0, o1 := h.bank.oe.CalcNextSunkOdds(game)
+			if pick == PickPlayer0 {
+				odds = o0
+			} else {
+				odds = o1
+			}
+		case BetSpinWinner:
+			o0, o1 := h.bank.oe.CalcSpinOdds(game)
+			if pick == PickPlayer0 {
+				odds = o0
+			} else {
+				odds = o1
+			}
+		default:
+			c.sendJSON(map[string]string{"type": "error", "message": "Type de pari invalide"})
+			return
+		}
+		h.store.AddPoints(c.Name, -amount)
+		game.Bets.Place(c.Name, kind, pick, amount, odds)
+		newRec := h.store.GetOrCreate(c.Name)
+		c.sendJSON(map[string]interface{}{
+			"type":      "bet_placed",
+			"kind":      string(kind),
+			"pick":      int(pick),
+			"amount":    amount,
+			"odds":      odds,
+			"newPoints": newRec.Points,
+		})
+		logInfo("bet", "player=%s game=%s kind=%s pick=%d amount=%d odds=%.1f", c.Name, gameID, kind, pick, amount, odds)
+		h.updateSpectatorsOdds(game)
+
+	case "bet_history":
+		// handled by store
 
 	case "chat":
 		text := getStr("text")
@@ -622,6 +880,19 @@ func (h *Hub) finishGame(game *Game, winnerIdx int, gameID string) {
 	h.broadcastLobby()
 }
 
+func (h *Hub) updateSpectatorsOdds(game *Game) {
+	o0, o1 := h.bank.oe.CalcMatchOdds(game)
+	for _, sp := range game.Spectators {
+		sp.sendJSON(map[string]interface{}{"type": "odds", "kind": "match_winner", "odds0": o0, "odds1": o1})
+	}
+}
+
+func (h *Hub) broadcastToSpectators(game *Game, msg map[string]interface{}) {
+	for _, sp := range game.Spectators {
+		sp.sendJSON(msg)
+	}
+}
+
 func (h *Hub) takeChallenge(target, challenger string) *Challenge {
 	chs, ok := h.challenges[target]
 	if !ok {
@@ -647,6 +918,18 @@ func (h *Hub) startGame(p1, p2 *Client, wager int) {
 	p1.GameID = gameID
 	p2.GameID = gameID
 	logInfo("game", "start game=%s p1=%s p2=%s wager=%d activeGames=%d", gameID, p1.Name, p2.Name, wager, len(h.games))
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		game.mu.Lock()
+		if game.Phase == PhasePlacement || game.Phase == PhaseBattle {
+			game.mu.Unlock()
+			h.mu.Lock()
+			h.bank.PlaceBankBets(game.Bets, game)
+			h.mu.Unlock()
+		} else {
+			game.mu.Unlock()
+		}
+	}()
 
 	p1.sendJSON(map[string]interface{}{"type": "game_start", "opponent": p2.Name, "wager": wager, "playerIdx": 0})
 	p2.sendJSON(map[string]interface{}{"type": "game_start", "opponent": p1.Name, "wager": wager, "playerIdx": 1})

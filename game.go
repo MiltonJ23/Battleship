@@ -45,26 +45,56 @@ const (
 )
 
 type Game struct {
-	ID           string
-	Players      [2]string // player names
-	Boards       [2]*PlayerBoard
-	Turn         int // index of player whose turn it is
-	Phase        GamePhase
-	Wager        int
-	Winner       string
-	RematchVotes [2]bool
-	PendingZone  [2]bool
-	mu           sync.Mutex
+	ID             string
+	Players        [2]string
+	Boards         [2]*PlayerBoard
+	Turn           int
+	Phase          GamePhase
+	Wager          int
+	Winner         string
+	RematchVotes   [2]bool
+	PendingZone    [2]bool
+	Spectators     map[string]*Client
+	Events         []GameEvent
+	Bets           *BettingPool
+	mu             sync.Mutex
+}
+
+type GameEvent struct {
+	Type   string                 `json:"type"`
+	Player int                    `json:"player"`
+	Data   map[string]interface{} `json:"data"`
+}
+
+func (g *Game) AddEvent(evt GameEvent) {
+	g.mu.Lock()
+	g.Events = append(g.Events, evt)
+	if len(g.Events) > 50 {
+		g.Events = g.Events[len(g.Events)-50:]
+	}
+	g.mu.Unlock()
+}
+
+func (g *Game) RecentEvents(n int) []GameEvent {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if n <= 0 || n > len(g.Events) {
+		n = len(g.Events)
+	}
+	return g.Events[len(g.Events)-n:]
 }
 
 func NewGame(id string, p1, p2 string, wager int) *Game {
 	return &Game{
-		ID:      id,
-		Players: [2]string{p1, p2},
-		Boards:  [2]*PlayerBoard{{}, {}},
-		Turn:    rand.Intn(2),
-		Phase:   PhasePlacement,
-		Wager:   wager,
+		ID:         id,
+		Players:    [2]string{p1, p2},
+		Boards:     [2]*PlayerBoard{{}, {}},
+		Turn:       rand.Intn(2),
+		Phase:      PhasePlacement,
+		Wager:      wager,
+		Spectators: make(map[string]*Client),
+		Events:     make([]GameEvent, 0),
+		Bets:       NewBettingPool(),
 	}
 }
 

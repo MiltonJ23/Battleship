@@ -5,7 +5,7 @@ import { confetti } from "./confetti";
 const GRID = 10;
 const SHIP_SIZES = [5, 4, 3, 3, 2];
 
-type Screen = "join" | "lobby" | "placement" | "battle" | "gameover";
+type Screen = "join" | "lobby" | "placement" | "battle" | "gameover" | "spectate";
 
 interface Placement {
   row: number;
@@ -237,6 +237,43 @@ function handleMessage(msg: any) {
     }
 
     case "chat_history":
+    case "live_matches":
+      liveMatches = msg.matches || [];
+      if (screen === "lobby") renderLiveMatchesPanel();
+      break;
+
+    case "spectate_start":
+      specP1 = msg.p1;
+      specP2 = msg.p2;
+      specBoard1 = msg.board1 || emptyGrid();
+      specBoard2 = msg.board2 || emptyGrid();
+      specEvents = msg.events || [];
+      specTurnName = msg.turnName;
+      screen = "spectate";
+      render();
+      break;
+
+    case "spectate_fire": {
+      const { x, y, result, shooter } = msg;
+      const isHit = result === "hit" || result === "sunk";
+      const targetBoard = shooter === 0 ? specBoard2 : specBoard1;
+      targetBoard[y][x] = isHit ? 3 : 2;
+      specTurnName = msg.turnName;
+      if (screen === "spectate") {
+        renderSpectateGrids();
+        setTimeout(() => animateShot("spec-grid-" + (shooter === 0 ? 2 : 1), x, y, isHit), 100);
+      }
+      break;
+    }
+
+    case "spectate_end":
+      screen = "lobby";
+      render();
+      break;
+
+    case "bets_resolved":
+      toast(`⚡ Paris résolus : ${msg.kind}`);
+      break;
       chatMessages = (msg.messages || [])
         .map((m: any) => ({ id: m.id, from: m.from, text: m.text, scope: "lobby", replyTo: m.replyTo || undefined }))
         .concat(chatMessages.filter((m) => m.scope !== "lobby"));
@@ -271,6 +308,14 @@ function handleMessage(msg: any) {
       setTimeout(() => t.remove(), 3500);
       if (chatMessages.length < 150) chatMessages.push({ from: msg.from, text: msg.text, scope: "lobby" });
       renderChatList();
+      break;
+
+    case "bet_placed":
+      toast(`🎲 Pari placé : ${msg.kind} → mise ${msg.amount} pts, cote ${msg.odds}x`);
+      break;
+
+    case "bet_won":
+      toast(`💰 Pari gagné ! +${msg.amount} pts (${msg.kind})`);
       break;
 
     case "error":
@@ -361,6 +406,10 @@ function renderLobby() {
           <h2>🏆 Classement</h2>
           <ol id="lb-list" class="lb-list"></ol>
         </section>
+        <section class="panel live-matches-panel">
+          <h2>🎮 Matchs en direct</h2>
+          <div id="live-matches" class="live-matches"></div>
+        </section>
         <section class="panel chat-panel">
           <h2>💬 Chat du port</h2>
           <div id="chat-messages" class="chat-msgs"></div>
@@ -417,6 +466,35 @@ function renderLobby() {
   const borrowBtn = document.getElementById("borrow-btn");
   if (borrowBtn) borrowBtn.onclick = showBorrowModal;
   send({ type: "loan_status" });
+  send({ type: "live_matches" });
+}
+
+function renderLiveMatchesPanel() {
+  const el = document.getElementById("live-matches");
+  if (!el) return;
+  if (liveMatches.length === 0) {
+    el.innerHTML = '<p class="empty-msg">Pas de match en cours</p>';
+    return;
+  }
+  el.innerHTML = liveMatches.map((g: any) => `
+    <div class="live-match">
+      <div class="lm-players">
+        <span>${esc(g.p1)} (${g.p1Ships}⚓)</span>
+        <span class="vs">VS</span>
+        <span>${esc(g.p2)} (${g.p2Ships}⚓)</span>
+      </div>
+      <div class="lm-info">
+        <span>${g.phase ? "📐 Placement" : "🎯 Tour: " + esc(g.turnName)}</span>
+        <span>💰 ${g.wager} pts</span>
+        <span>👁 ${g.spectators}</span>
+      </div>
+      <button class="btn-challenge" data-game="${g.id}">REGARDER</button>
+    </div>
+  `).join("");
+
+  el.querySelectorAll(".btn-challenge").forEach((b) => {
+    b.addEventListener("click", () => send({ type: "spectate", gameId: (b as HTMLElement).dataset.game }));
+  });
 }
 
 function renderLoanBadge(): string {
@@ -1061,6 +1139,114 @@ function esc(str: string) {
   d.textContent = str;
   return d.innerHTML;
 }
+
+// ─── spectate / betting ─────────────────────────────────────────
+
+let liveMatches: any[] = [];
+let specP1 = "", specP2 = "";
+let specBoard1: number[][] = emptyGrid();
+let specBoard2: number[][] = emptyGrid();
+let specEvents: any[] = [];
+let specTurnName = "";
+let specOdds: { kind: string; odds0: number; odds1: number } | null = null;
+let specGameId = "";
+
+function renderSpectate() {
+  app.innerHTML = `<div class="spectate-screen">
+    <header class="battle-header">
+      <span class="vs-text">${esc(specP1)} <span class="vs">VS</span> ${esc(specP2)}</span>
+      <button id="unspectate-btn" class="btn-danger">Quitter</button>
+    </header>
+    <div class="turn-indicator">Tour de ${esc(specTurnName)}</div>
+    <div class="spectate-grids">
+      <div class="battle-section"><h3>${esc(specP1)}</h3><div id="spec-grid-1" class="grid spec-grid"></div></div>
+      <div class="battle-section"><h3>${esc(specP2)}</h3><div id="spec-grid-2" class="grid spec-grid"></div></div>
+    </div>
+    <div class="spec-bets card">
+      <h3>🎲 Paris en direct</h3>
+      <div id="spec-odds" class="spec-odds-row"></div>
+      <div id="spec-bet-btns" class="spec-bet-btns"></div>
+    </div>
+    <div class="spec-events card">
+      <h3>📡 Événements</h3>
+      <div id="spec-events" class="spec-event-list"></div>
+    </div>
+  </div>`;
+  renderSpectateGrids();
+  document.getElementById("unspectate-btn")!.onclick = () => { send({ type: "unspectate" }); screen = "lobby"; render(); };
+  renderSpecEvents();
+  renderSpecOdds();
+}
+
+function renderSpectateGrids() {
+  const g1 = document.getElementById("spec-grid-1"); if (g1) renderSpecGrid(g1, specBoard1);
+  const g2 = document.getElementById("spec-grid-2"); if (g2) renderSpecGrid(g2, specBoard2);
+}
+
+function renderSpecGrid(el: HTMLElement, data: number[][]) {
+  el.innerHTML = "";
+  for (let r = 0; r < GRID; r++) for (let c = 0; c < GRID; c++) {
+    const cell = document.createElement("div");
+    cell.className = "gcell water";
+    const v = data[r][c];
+    if (v === 1) cell.classList.add("ship");
+    if (v === 2) { cell.classList.add("miss"); cell.textContent = "•"; }
+    if (v === 3) { cell.classList.add("hit", "ship-hit"); cell.textContent = "✕"; }
+    el.appendChild(cell);
+  }
+}
+
+function renderSpecEvents() {
+  const el = document.getElementById("spec-events"); if (!el) return;
+  el.innerHTML = specEvents.slice(-10).reverse().map((e: any) => {
+    const name = e.player === 0 ? specP1 : specP2;
+    const d = e.data || {};
+    const icon = d.result === "hit" ? "🎯" : d.result === "sunk" ? "💥" : "💧";
+    return `<div class="spec-event">${icon} <strong>${esc(name)}</strong> ${d.x},${d.y} ${d.ship||""}</div>`;
+  }).join("");
+}
+
+function renderSpecOdds() {
+  const oddsEl = document.getElementById("spec-odds"), btnEl = document.getElementById("spec-bet-btns");
+  if (!oddsEl || !btnEl || !specOdds) return;
+  oddsEl.innerHTML = `<span class="odd-chip">${esc(specP1)}: ${specOdds.odds0}x</span><span class="odd-chip">${esc(specP2)}: ${specOdds.odds1}x</span>`;
+  btnEl.innerHTML = `
+    <button class="btn-bet" data-kind="match_winner" data-pick="1">Parier sur ${esc(specP1)}</button>
+    <button class="btn-bet" data-kind="match_winner" data-pick="2">Parier sur ${esc(specP2)}</button>
+    <button class="btn-bet" data-kind="next_hit" data-pick="1">Prochain hit: ${esc(specP1)}</button>
+    <button class="btn-bet" data-kind="next_hit" data-pick="2">Prochain hit: ${esc(specP2)}</button>
+  `;
+  btnEl.querySelectorAll(".btn-bet").forEach(b => b.addEventListener("click", () => {
+    const kind = (b as HTMLElement).dataset.kind!, pick = parseInt((b as HTMLElement).dataset.pick!);
+    showBetModal(kind, pick);
+  }));
+}
+
+function showBetModal(kind: string, pick: number) {
+  closeModals();
+  const dlg = document.createElement("div");
+  dlg.className = "modal-overlay";
+  dlg.innerHTML = `<div class="modal">
+    <h3>🎲 Pari: ${kind.replace("_"," ")}</h3>
+    <p>Tu paries sur <strong>${esc(pick===1?specP1:specP2)}</strong></p>
+    <label>Mise (max ${myPoints} pts)</label>
+    <input id="bet-amount" type="number" min="5" max="${myPoints}" value="10" inputmode="numeric"/>
+    <div class="modal-btns">
+      <button id="bet-cancel">Annuler</button>
+      <button id="bet-ok" class="btn-primary">PARIER</button>
+    </div>
+  </div>`;
+  document.body.appendChild(dlg);
+  dlg.onclick = e => e.target===dlg && dlg.remove();
+  document.getElementById("bet-cancel")!.onclick = () => dlg.remove();
+  document.getElementById("bet-ok")!.onclick = () => {
+    const amount = Math.min(myPoints, Math.max(5, +(document.getElementById("bet-amount") as HTMLInputElement).value||10));
+    send({ type: "bet", gameId: specGameId, kind, pick, amount });
+    myPoints -= amount;
+    dlg.remove();
+  };
+}
+
 function escAttr(str: string) {
   return str.replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
