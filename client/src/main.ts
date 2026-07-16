@@ -78,6 +78,7 @@ function handleMessage(msg: any) {
       myLosses = msg.losses;
       sessionStorage.setItem("bs_name", myName);
       screen = "lobby";
+      send({ type: "loan_status" });
       render();
       break;
 
@@ -499,7 +500,7 @@ function renderLiveMatchesPanel() {
 
 function renderLoanBadge(): string {
   if (!activeLoan) {
-    if (myPoints < 50) return `<div class="loan-cta"><button id="borrow-btn" class="btn-spin">🏦 Emprunter à la banque</button></div>`;
+    if (myPoints < 75) return `<div class="loan-cta"><button id="borrow-btn" class="btn-spin">🏦 Emprunter à la banque</button></div>`;
     return "";
   }
   const pct = Math.round((1 - activeLoan.remaining / (activeLoan.principal * (1 + activeLoan.rate / 100))) * 100);
