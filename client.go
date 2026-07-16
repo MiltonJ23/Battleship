@@ -17,6 +17,7 @@ type Client struct {
 }
 
 func (c *Client) sendJSON(v interface{}) {
+	defer func() { recover() }()
 	data, err := json.Marshal(v)
 	if err != nil {
 		return
@@ -29,8 +30,7 @@ func (c *Client) sendJSON(v interface{}) {
 
 func (c *Client) readPump() {
 	defer func() {
-		c.Hub.handleDisconnect(c)
-		c.Conn.Close()
+		recover()
 	}()
 	c.Conn.SetReadLimit(4096)
 	c.Conn.SetReadDeadline(time.Now().Add(120 * time.Second))
@@ -41,7 +41,7 @@ func (c *Client) readPump() {
 	for {
 		_, msgBytes, err := c.Conn.ReadMessage()
 		if err != nil {
-			break
+			return
 		}
 		var msg map[string]json.RawMessage
 		if err := json.Unmarshal(msgBytes, &msg); err != nil {
@@ -64,7 +64,9 @@ func (c *Client) writePump() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer func() {
 		ticker.Stop()
+		recover()
 		c.Conn.Close()
+		c.Hub.handleDisconnect(c)
 	}()
 	for {
 		select {

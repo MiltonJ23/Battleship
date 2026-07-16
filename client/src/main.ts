@@ -250,6 +250,7 @@ function handleMessage(msg: any) {
       specBoard2 = msg.board2 || emptyGrid();
       specEvents = msg.events || [];
       specTurnName = msg.turnName;
+      specGameId = msg.gameId || specGameId;
       screen = "spectate";
       render();
       break;
@@ -309,6 +310,11 @@ function handleMessage(msg: any) {
       setTimeout(() => t.remove(), 3500);
       if (chatMessages.length < 150) chatMessages.push({ from: msg.from, text: msg.text, scope: "lobby" });
       renderChatList();
+      break;
+
+    case "odds":
+      specOdds = { kind: msg.kind || "", odds0: msg.odds0 || 0, odds1: msg.odds1 || 0 };
+      if (screen === "spectate") renderSpecOdds();
       break;
 
     case "bet_placed":
@@ -1034,7 +1040,7 @@ function renderChatList() {
   }
   const el = document.getElementById("chat-messages");
   if (!el) return;
-  const scope = screen === "battle" || screen === "placement" ? "game" : "lobby";
+  const scope = screen === "battle" || screen === "placement" ? "game" : screen === "spectate" ? "spec" : "lobby";
   const msgs = chatMessages.filter((m) => m.scope === scope);
   el.innerHTML = msgs.map((m, idx) => renderChatBubble(m, idx)).join("");
   el.scrollTop = el.scrollHeight;
@@ -1175,11 +1181,21 @@ function renderSpectate() {
       <h3>📡 Événements</h3>
       <div id="spec-events" class="spec-event-list"></div>
     </div>
+    <div class="chat-panel panel">
+      <h3>💬 Chat spectateurs</h3>
+      <div id="chat-messages" class="chat-msgs"></div>
+      <div class="chat-input">
+        <input id="chat-inp" type="text" placeholder="Votre message..." maxlength="300" autocomplete="off" />
+        <button id="chat-send-btn">➤</button>
+      </div>
+    </div>
   </div>`;
   renderSpectateGrids();
   document.getElementById("unspectate-btn")!.onclick = () => { send({ type: "unspectate" }); screen = "lobby"; render(); };
   renderSpecEvents();
   renderSpecOdds();
+  renderChatList();
+  setupChatInput();
 }
 
 function renderSpectateGrids() {

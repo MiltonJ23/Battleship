@@ -148,12 +148,14 @@ func (h *Hub) forfeitGame(c *Client) {
 }
 
 func (h *Hub) notifySpectators(game *Game, msg map[string]interface{}) {
+	defer func() { recover() }()
 	for _, sp := range game.Spectators {
 		sp.sendJSON(msg)
 	}
 }
 
 func (h *Hub) kickSpectators(game *Game) {
+	defer func() { recover() }()
 	for _, sp := range game.Spectators {
 		sp.sendJSON(map[string]string{"type": "spectate_end"})
 		sp.GameID = ""
@@ -671,6 +673,7 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 		// send full board state
 		c.sendJSON(map[string]interface{}{
 			"type":     "spectate_start",
+			"gameId":   gameID,
 			"p1":       game.Players[0],
 			"p2":       game.Players[1],
 			"wager":    game.Wager,
@@ -790,12 +793,36 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 			"replySnip": replySnip,
 		}
 		if c.GameID != "" {
-			chatMsg["scope"] = "game"
 			game := h.games[c.GameID]
 			if game != nil {
+				isSpectator := false
 				for _, name := range game.Players {
-					if pc, ok := h.clients[name]; ok {
-						pc.sendJSON(chatMsg)
+					if c.Name == name {
+						isSpectator = false
+						break
+					}
+					isSpectator = true
+				}
+				// spectator chat: broadcast to all spectators + players
+				if _, isSp := game.Spectators[c.Name]; isSp || isSpectator {
+					chatMsg["scope"] = "spec"
+				} else {
+					chatMsg["scope"] = "game"
+				}
+				if chatMsg["scope"] == "spec" {
+					for _, name := range game.Players {
+						if pc, ok := h.clients[name]; ok {
+							pc.sendJSON(chatMsg)
+						}
+					}
+					for _, sp := range game.Spectators {
+						sp.sendJSON(chatMsg)
+					}
+				} else {
+					for _, name := range game.Players {
+						if pc, ok := h.clients[name]; ok {
+							pc.sendJSON(chatMsg)
+						}
 					}
 				}
 			}
