@@ -22,12 +22,14 @@ type BetKind string
 
 const (
 	BetMatchWinner BetKind = "match_winner"
-	BetNextHit     BetKind = "next_hit"   // who will hit
-	BetNextSunk    BetKind = "next_sunk"  // who will sink a ship
+	BetNextHit     BetKind = "next_hit"
+	BetNextMiss    BetKind = "next_miss"
+	BetNextSunk    BetKind = "next_sunk"
 	BetSpinWinner  BetKind = "spin_winner"
+	BetFirstBlood  BetKind = "first_blood"
 )
 
-var AllBetKinds = []BetKind{BetMatchWinner, BetNextHit, BetNextSunk, BetSpinWinner}
+var AllBetKinds = []BetKind{BetMatchWinner, BetNextHit, BetNextMiss, BetNextSunk, BetSpinWinner, BetFirstBlood}
 
 // bet placed by a user or bank
 type Bet struct {
@@ -155,8 +157,27 @@ func (oe *OddsEngine) CalcNextSunkOdds(game *Game) (float64, float64) {
 	return oe.CalcNextHitOdds(game) // similar logic, just less likely => same odds
 }
 
-func (oe *OddsEngine) CalcSpinOdds(game *Game) (float64, float64) {
-	return 1.8, 1.8 // 50/50 with house edge
+func (oe *OddsEngine) CalcNextMissOdds(game *Game) (float64, float64) {
+	game.mu.Lock()
+	ships0 := float64(game.ShipsLeft(0))
+	ships1 := float64(game.ShipsLeft(1))
+	game.mu.Unlock()
+	total := ships0 + ships1
+	if total == 0 {
+		return 1.8, 1.8
+	}
+	// player with fewer ships remaining is more likely to be targeted = more likely to be hit, so their miss odds are higher (less likely to miss)
+	return 1.0 + (ships1/(total))*1.5, 1.0 + (ships0/(total))*1.5
+}
+
+func (oe *OddsEngine) CalcFirstBloodOdds(curHit0, curHit1 int) (float64, float64) {
+	if curHit0 == 0 && curHit1 == 0 {
+		return 2.0, 2.0
+	}
+	if curHit0 > curHit1 {
+		return 1.3, 2.5
+	}
+	return 2.5, 1.3
 }
 
 // ─── bank auto-betting ────────────────────────────────────────
@@ -179,10 +200,14 @@ func (bk *Bank) PlaceBankBets(pool *BettingPool, game *Game) []*Bet {
 			o0, o1 = bk.oe.CalcMatchOdds(game)
 		case BetNextHit:
 			o0, o1 = bk.oe.CalcNextHitOdds(game)
+		case BetNextMiss:
+			o0, o1 = bk.oe.CalcNextMissOdds(game)
 		case BetNextSunk:
 			o0, o1 = bk.oe.CalcNextSunkOdds(game)
 		case BetSpinWinner:
 			o0, o1 = bk.oe.CalcSpinOdds(game)
+		case BetFirstBlood:
+			o0, o1 = bk.oe.CalcFirstBloodOdds(0, 0)
 		}
 		bankWager := 20 + rand.Intn(81) // 20-100
 		// bet against stronger (more bets on weaker)

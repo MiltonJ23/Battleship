@@ -1305,6 +1305,18 @@ function renderSpecOdds() {
     <button class="btn-bet btn-bet-quick" data-kind="next_hit" data-pick="2">
       🎯 Prochain hit: ${esc(specP2)}
     </button>
+    <button class="btn-bet btn-bet-quick" data-kind="next_miss" data-pick="1">
+      💧 Prochain raté: ${esc(specP1)}
+    </button>
+    <button class="btn-bet btn-bet-quick" data-kind="next_miss" data-pick="2">
+      💧 Prochain raté: ${esc(specP2)}
+    </button>
+    <button class="btn-bet btn-bet-quick" data-kind="next_sunk" data-pick="1">
+      💥 Prochain coulé: ${esc(specP1)}
+    </button>
+    <button class="btn-bet btn-bet-quick" data-kind="next_sunk" data-pick="2">
+      💥 Prochain coulé: ${esc(specP2)}
+    </button>
   `;
   btnEl.querySelectorAll(".btn-bet").forEach(b => b.addEventListener("click", () => {
     const kind = (b as HTMLElement).dataset.kind!, pick = parseInt((b as HTMLElement).dataset.pick!);

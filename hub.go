@@ -487,6 +487,18 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 			}
 			betResolved = append(betResolved, resolved...)
 		}
+		if !res.Hit {
+			resolved := game.Bets.ResolveByEvent(BetNextMiss, BetPick(playerIdx+1))
+			for _, b := range resolved {
+				if b.Won && b.Player != "banque" {
+					h.store.AddPoints(b.Player, int(float64(b.Amount)*b.Odds))
+					if pc, ok := h.clients[b.Player]; ok {
+						pc.sendJSON(map[string]interface{}{"type": "bet_won", "kind": "next_miss", "amount": int(float64(b.Amount) * b.Odds)})
+					}
+				}
+			}
+			betResolved = append(betResolved, resolved...)
+		}
 
 		for i, name := range game.Players {
 			if pc, ok := h.clients[name]; ok {
@@ -765,6 +777,20 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 			}
 		case BetSpinWinner:
 			o0, o1 := h.bank.oe.CalcSpinOdds(game)
+			if pick == PickPlayer0 {
+				odds = o0
+			} else {
+				odds = o1
+			}
+		case BetFirstBlood:
+			o0, o1 := h.bank.oe.CalcFirstBloodOdds(0, 0)
+			if pick == PickPlayer0 {
+				odds = o0
+			} else {
+				odds = o1
+			}
+		case BetNextMiss:
+			o0, o1 := h.bank.oe.CalcNextMissOdds(game)
 			if pick == PickPlayer0 {
 				odds = o0
 			} else {
