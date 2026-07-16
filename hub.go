@@ -1,0 +1,596 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"math/rand"
+	"sync"
+	"time"
+)
+
+type Challenge struct {
+	Challenger string
+	Target     string
+	Wager      int
+}
+
+type Hub struct {
+	store      *Store
+	clients    map[string]*Client
+	conns      map[*Client]bool
+	challenges map[string][]*Challenge
+	games      map[string]*Game
+	mu         sync.Mutex
+	gameIDSeq  int
+}
+
+func NewHub(store *Store) *Hub {
+	return &Hub{
+		store:      store,
+		clients:    make(map[string]*Client),
+		conns:      make(map[*Client]bool),
+		challenges: make(map[string][]*Challenge),
+		games:      make(map[string]*Game),
+	}
+}
+
+func (h *Hub) addConn(c *Client) {
+	h.mu.Lock()
+	h.conns[c] = true
+	h.mu.Unlock()
+}
+
+func (h *Hub) handleDisconnect(c *Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	delete(h.conns, c)
+	logInfo("ws", "connection closed name=%q addr=%s", c.Name, c.Addr)
+
+	if c.Name == "" {
+		return
+	}
+	if existing, ok := h.clients[c.Name]; !ok || existing != c {
+		return
+	}
+
+	h.forfeitGame(c)
+
+	delete(h.challenges, c.Name)
+	for target, chs := range h.challenges {
+		filtered := chs[:0]
+		for _, ch := range chs {
+			if ch.Challenger != c.Name {
+				filtered = append(filtered, ch)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(h.challenges, target)
+		} else {
+			h.challenges[target] = filtered
+		}
+	}
+
+	delete(h.clients, c.Name)
+	h.broadcastLobby()
+}
+
+func (h *Hub) forfeitGame(c *Client) {
+	if c.GameID == "" {
+		return
+	}
+	gameID := c.GameID
+	game, ok := h.games[gameID]
+	if !ok {
+		c.GameID = ""
+		return
+	}
+	game.mu.Lock()
+	over := game.Phase == PhaseOver
+	if !over {
+		oppIdx := 1 - game.PlayerIndex(c.Name)
+		oppName := game.Players[oppIdx]
+		game.Phase = PhaseOver
+		game.Winner = oppName
+		game.mu.Unlock()
+
+		logInfo("game", "forfeit game=%s loser=%s winner=%s wager=%d", gameID, c.Name, oppName, game.Wager)
+		h.store.UpdateAfterGame(oppName, c.Name, game.Wager)
+
+		if oppClient, ok := h.clients[oppName]; ok {
+			oppClient.sendJSON(map[string]interface{}{
+				"type":         "game_over",
+				"winner":       oppName,
+				"won":          true,
+				"pointsEarned": game.Wager,
+				"reason":       "forfeit",
+			})
+			oppClient.GameID = ""
+		}
+	} else {
+		game.mu.Unlock()
+		oppIdx := 1 - game.PlayerIndex(c.Name)
+		oppName := game.Players[oppIdx]
+		if oppClient, ok := h.clients[oppName]; ok && oppClient.GameID == gameID {
+			oppClient.sendJSON(map[string]string{"type": "opponent_left"})
+			oppClient.GameID = ""
+		}
+	}
+	c.GameID = ""
+	delete(h.games, gameID)
+}
+
+func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMessage) {
+	getStr := func(key string) string {
+		var s string
+		if v, ok := raw[key]; ok {
+			json.Unmarshal(v, &s)
+		}
+		return s
+	}
+	getInt := func(key string) int {
+		var f float64
+		if v, ok := raw[key]; ok {
+			json.Unmarshal(v, &f)
+		}
+		return int(f)
+	}
+
+	switch msgType {
+	case "join":
+		name := getStr("name")
+		if name == "" || len(name) > 20 {
+			c.sendJSON(map[string]string{"type": "error", "message": "Pseudo invalide (1-20 caracteres)"})
+			return
+		}
+		if _, exists := h.clients[name]; exists {
+			c.sendJSON(map[string]string{"type": "error", "message": "Ce pseudo est deja connecte"})
+			return
+		}
+		player := h.store.GetOrCreate(name)
+		c.Name = name
+		h.clients[name] = c
+		logInfo("join", "player=%s points=%d addr=%s online=%d", name, player.Points, c.Addr, len(h.clients))
+		c.sendJSON(map[string]interface{}{
+			"type":   "joined",
+			"name":   name,
+			"points": player.Points,
+			"wins":   player.Wins,
+			"losses": player.Losses,
+		})
+		c.sendJSON(map[string]interface{}{
+			"type":     "chat_history",
+			"messages": h.store.GetRecentChat(50),
+		})
+		h.broadcastLobby()
+
+	case "challenge":
+		target := getStr("target")
+		wager := getInt("wager")
+		if c.Name == "" || target == "" || target == c.Name {
+			return
+		}
+		targetClient, ok := h.clients[target]
+		if !ok {
+			c.sendJSON(map[string]string{"type": "error", "message": "Ce joueur n'est pas connecte"})
+			return
+		}
+		if targetClient.GameID != "" || c.GameID != "" {
+			c.sendJSON(map[string]string{"type": "error", "message": "Vous ou votre adversaire etes deja en jeu"})
+			return
+		}
+		if wager < 0 {
+			wager = 0
+		}
+		cRec := h.store.GetOrCreate(c.Name)
+		tRec := h.store.GetOrCreate(target)
+		if cRec.Points < wager {
+			c.sendJSON(map[string]string{"type": "error", "message": "Vous n'avez pas assez de points"})
+			return
+		}
+		if tRec.Points < wager {
+			c.sendJSON(map[string]string{"type": "error", "message": "L'adversaire n'a pas assez de points"})
+			return
+		}
+
+		chs := h.challenges[target]
+		filtered := chs[:0]
+		for _, ch := range chs {
+			if ch.Challenger != c.Name {
+				filtered = append(filtered, ch)
+			}
+		}
+		h.challenges[target] = append(filtered, &Challenge{Challenger: c.Name, Target: target, Wager: wager})
+		logInfo("challenge", "from=%s to=%s wager=%d", c.Name, target, wager)
+
+		c.sendJSON(map[string]interface{}{"type": "challenge_sent", "target": target, "wager": wager})
+		targetClient.sendJSON(map[string]interface{}{"type": "challenge_received", "challenger": c.Name, "wager": wager})
+
+	case "accept_challenge":
+		challenger := getStr("challenger")
+		ch := h.takeChallenge(c.Name, challenger)
+		if ch == nil {
+			c.sendJSON(map[string]string{"type": "error", "message": "Defi expire"})
+			return
+		}
+		challengerClient, ok := h.clients[ch.Challenger]
+		if !ok || challengerClient.GameID != "" || c.GameID != "" {
+			c.sendJSON(map[string]string{"type": "error", "message": "Defi indisponible"})
+			return
+		}
+		cRec := h.store.GetOrCreate(c.Name)
+		tRec := h.store.GetOrCreate(ch.Challenger)
+		if cRec.Points < ch.Wager || tRec.Points < ch.Wager {
+			c.sendJSON(map[string]string{"type": "error", "message": "Points insuffisants"})
+			return
+		}
+		h.startGame(challengerClient, c, ch.Wager)
+
+	case "decline_challenge":
+		challenger := getStr("challenger")
+		ch := h.takeChallenge(c.Name, challenger)
+		if ch != nil {
+			if client, ok := h.clients[challenger]; ok {
+				client.sendJSON(map[string]interface{}{"type": "challenge_declined", "target": c.Name})
+			}
+		}
+
+	case "place_ships":
+		game := h.games[c.GameID]
+		if game == nil {
+			return
+		}
+		var placements []ShipPlacement
+		if v, ok := raw["ships"]; ok {
+			json.Unmarshal(v, &placements)
+		}
+		playerIdx := game.PlayerIndex(c.Name)
+		if playerIdx < 0 {
+			return
+		}
+		if !game.PlaceShips(playerIdx, placements) {
+			c.sendJSON(map[string]string{"type": "error", "message": "Placement invalide"})
+			return
+		}
+		c.sendJSON(map[string]string{"type": "ships_accepted"})
+
+		game.mu.Lock()
+		battle := game.Phase == PhaseBattle
+		turn := game.Turn
+		game.mu.Unlock()
+
+		if battle {
+			for i, name := range game.Players {
+				if pc, ok := h.clients[name]; ok {
+					pc.sendJSON(map[string]interface{}{"type": "battle_start", "yourTurn": turn == i})
+				}
+			}
+		} else {
+			oppIdx := 1 - playerIdx
+			if opp, ok := h.clients[game.Players[oppIdx]]; ok {
+				opp.sendJSON(map[string]string{"type": "opponent_ready"})
+			}
+		}
+
+	case "spin":
+		game := h.games[c.GameID]
+		if game == nil {
+			return
+		}
+		playerIdx := game.PlayerIndex(c.Name)
+		if playerIdx < 0 {
+			return
+		}
+		game.mu.Lock()
+		if game.Phase != PhaseBattle || game.PendingZone[playerIdx] {
+			game.mu.Unlock()
+			return
+		}
+		game.mu.Unlock()
+
+		rec := h.store.GetOrCreate(c.Name)
+		if rec.Points < SpinCost {
+			c.sendJSON(map[string]string{"type": "error", "message": "Il faut 10 points pour lancer la roulette"})
+			return
+		}
+		h.store.AddPoints(c.Name, -SpinCost)
+
+		beneficiaryIdx := playerIdx
+		if rand.Intn(2) == 1 {
+			beneficiaryIdx = 1 - playerIdx
+		}
+		game.mu.Lock()
+		game.PendingZone[beneficiaryIdx] = true
+		game.mu.Unlock()
+		logInfo("spin", "game=%s spinner=%s beneficiary=%s cost=%d", c.GameID, c.Name, game.Players[beneficiaryIdx], SpinCost)
+
+		newRec := h.store.GetOrCreate(c.Name)
+		for i, name := range game.Players {
+			if pc, ok := h.clients[name]; ok {
+				pc.sendJSON(map[string]interface{}{
+					"type":        "spin_result",
+					"spinner":     playerIdx,
+					"beneficiary": beneficiaryIdx,
+					"youBenefit":  beneficiaryIdx == i,
+					"youSpun":     playerIdx == i,
+					"spinnerPoints": newRec.Points,
+				})
+			}
+		}
+
+	case "fire_zone":
+		game := h.games[c.GameID]
+		if game == nil {
+			return
+		}
+		playerIdx := game.PlayerIndex(c.Name)
+		if playerIdx < 0 {
+			return
+		}
+		x := getInt("x")
+		y := getInt("y")
+
+		res := game.FireZone(playerIdx, y, x)
+		if !res.Valid {
+			logWarn("zone", "invalid zone fire game=%s player=%s xy=(%d,%d)", c.GameID, c.Name, x, y)
+			return
+		}
+		hits := 0
+		for _, cl := range res.Cells {
+			if cl.Result == "hit" || cl.Result == "sunk" {
+				hits++
+			}
+		}
+		logInfo("zone", "game=%s shooter=%s center=(%d,%d) hits=%d gameOver=%v", c.GameID, c.Name, x, y, hits, res.GameOver)
+
+		for i, name := range game.Players {
+			if pc, ok := h.clients[name]; ok {
+				pc.sendJSON(map[string]interface{}{
+					"type":     "zone_result",
+					"cells":    res.Cells,
+					"cx":       x,
+					"cy":       y,
+					"shooter":  playerIdx,
+					"yourTurn": res.NextTurn == i,
+					"gameOver": res.GameOver,
+				})
+			}
+		}
+
+		if res.GameOver {
+			h.finishGame(game, playerIdx, c.GameID)
+		}
+
+	case "fire":
+		game := h.games[c.GameID]
+		if game == nil {
+			return
+		}
+		playerIdx := game.PlayerIndex(c.Name)
+		if playerIdx < 0 {
+			return
+		}
+		x := getInt("x")
+		y := getInt("y")
+
+		res := game.Fire(playerIdx, y, x)
+		if !res.Valid {
+			return
+		}
+
+		resultType := "miss"
+		sunkShip := ""
+		if res.Hit {
+			resultType = "hit"
+			if res.Sunk && res.SunkShip != nil {
+				resultType = "sunk"
+				sunkShip = res.SunkShip.Name
+			}
+		}
+
+		for i, name := range game.Players {
+			if pc, ok := h.clients[name]; ok {
+				pc.sendJSON(map[string]interface{}{
+					"type":     "fire_result",
+					"x":        res.Col,
+					"y":        res.Row,
+					"result":   resultType,
+					"ship":     sunkShip,
+					"shooter":  playerIdx,
+					"yourTurn": res.NextTurn == i,
+					"gameOver": res.GameOver,
+				})
+			}
+		}
+
+		if res.GameOver {
+			h.finishGame(game, playerIdx, c.GameID)
+		}
+
+	case "rematch":
+		game := h.games[c.GameID]
+		if game == nil {
+			return
+		}
+		game.mu.Lock()
+		if game.Phase != PhaseOver {
+			game.mu.Unlock()
+			return
+		}
+		playerIdx := game.PlayerIndex(c.Name)
+		if playerIdx < 0 {
+			game.mu.Unlock()
+			return
+		}
+		game.RematchVotes[playerIdx] = true
+		both := game.RematchVotes[0] && game.RematchVotes[1]
+		p1Name, p2Name, wager := game.Players[0], game.Players[1], game.Wager
+		game.mu.Unlock()
+
+		if both {
+			p1, ok1 := h.clients[p1Name]
+			p2, ok2 := h.clients[p2Name]
+			if !ok1 || !ok2 {
+				return
+			}
+			r1 := h.store.GetOrCreate(p1Name)
+			r2 := h.store.GetOrCreate(p2Name)
+			if r1.Points < wager || r2.Points < wager {
+				msg := map[string]string{"type": "error", "message": "Points insuffisants pour rejouer avec cette mise"}
+				p1.sendJSON(msg)
+				p2.sendJSON(msg)
+				return
+			}
+			delete(h.games, c.GameID)
+			h.startGame(p1, p2, wager)
+		} else {
+			oppIdx := 1 - playerIdx
+			if opp, ok := h.clients[game.Players[oppIdx]]; ok {
+				opp.sendJSON(map[string]string{"type": "rematch_requested"})
+			}
+		}
+
+	case "leave_game":
+		h.forfeitGame(c)
+		h.broadcastLobby()
+
+	case "client_log":
+		lvl := getStr("level")
+		text := getStr("message")
+		if len(text) > 500 {
+			text = text[:500]
+		}
+		logWarn("client", "name=%q addr=%s level=%s msg=%s", c.Name, c.Addr, lvl, text)
+
+	case "chat":
+		text := getStr("text")
+		if c.Name == "" || text == "" || len(text) > 300 {
+			return
+		}
+		chatMsg := map[string]interface{}{"type": "chat", "from": c.Name, "text": text}
+		if c.GameID != "" {
+			chatMsg["scope"] = "game"
+			game := h.games[c.GameID]
+			if game != nil {
+				for _, name := range game.Players {
+					if pc, ok := h.clients[name]; ok {
+						pc.sendJSON(chatMsg)
+					}
+				}
+			}
+		} else {
+			chatMsg["scope"] = "lobby"
+			h.store.AppendChat(c.Name, text, time.Now().Unix())
+			for cl := range h.conns {
+				if cl.Name == "" {
+					cl.sendJSON(chatMsg)
+				}
+			}
+			for _, cl := range h.clients {
+				if cl.GameID == "" {
+					cl.sendJSON(chatMsg)
+				}
+			}
+		}
+	}
+}
+
+const SpinCost = 10
+
+// finishGame must be called with h.mu held
+func (h *Hub) finishGame(game *Game, winnerIdx int, gameID string) {
+	loser := game.Players[1-winnerIdx]
+	winner := game.Winner
+	logInfo("game", "over game=%s winner=%s loser=%s wager=%d", gameID, winner, loser, game.Wager)
+	h.store.UpdateAfterGame(winner, loser, game.Wager)
+	wRec := h.store.GetOrCreate(winner)
+	lRec := h.store.GetOrCreate(loser)
+
+	for _, name := range game.Players {
+		if pc, ok := h.clients[name]; ok {
+			won := name == winner
+			pts := wRec.Points
+			if !won {
+				pts = lRec.Points
+			}
+			pc.sendJSON(map[string]interface{}{
+				"type":         "game_over",
+				"winner":       winner,
+				"won":          won,
+				"pointsEarned": game.Wager,
+				"newPoints":    pts,
+			})
+		}
+	}
+	h.broadcastLobby()
+}
+
+func (h *Hub) takeChallenge(target, challenger string) *Challenge {
+	chs, ok := h.challenges[target]
+	if !ok {
+		return nil
+	}
+	for i, ch := range chs {
+		if ch.Challenger == challenger {
+			h.challenges[target] = append(chs[:i], chs[i+1:]...)
+			if len(h.challenges[target]) == 0 {
+				delete(h.challenges, target)
+			}
+			return ch
+		}
+	}
+	return nil
+}
+
+func (h *Hub) startGame(p1, p2 *Client, wager int) {
+	h.gameIDSeq++
+	gameID := fmt.Sprintf("game_%d", h.gameIDSeq)
+	game := NewGame(gameID, p1.Name, p2.Name, wager)
+	h.games[gameID] = game
+	p1.GameID = gameID
+	p2.GameID = gameID
+	logInfo("game", "start game=%s p1=%s p2=%s wager=%d activeGames=%d", gameID, p1.Name, p2.Name, wager, len(h.games))
+
+	p1.sendJSON(map[string]interface{}{"type": "game_start", "opponent": p2.Name, "wager": wager, "playerIdx": 0})
+	p2.sendJSON(map[string]interface{}{"type": "game_start", "opponent": p1.Name, "wager": wager, "playerIdx": 1})
+	h.broadcastLobby()
+}
+
+func (h *Hub) broadcastLobby() {
+	type PlayerInfo struct {
+		Name   string `json:"name"`
+		Points int    `json:"points"`
+		Wins   int    `json:"wins"`
+		Losses int    `json:"losses"`
+		InGame bool   `json:"inGame"`
+	}
+
+	players := []PlayerInfo{}
+	for _, c := range h.clients {
+		rec := h.store.GetOrCreate(c.Name)
+		players = append(players, PlayerInfo{
+			Name:   c.Name,
+			Points: rec.Points,
+			Wins:   rec.Wins,
+			Losses: rec.Losses,
+			InGame: c.GameID != "",
+		})
+	}
+
+	leaderboard := h.store.GetLeaderboard(10)
+	for _, c := range h.clients {
+		rec := h.store.GetOrCreate(c.Name)
+		c.sendJSON(map[string]interface{}{
+			"type":        "lobby_update",
+			"players":     players,
+			"leaderboard": leaderboard,
+			"me": PlayerInfo{
+				Name:   c.Name,
+				Points: rec.Points,
+				Wins:   rec.Wins,
+				Losses: rec.Losses,
+				InGame: c.GameID != "",
+			},
+		})
+	}
+}
