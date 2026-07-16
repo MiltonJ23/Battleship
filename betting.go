@@ -170,6 +170,10 @@ func (oe *OddsEngine) CalcNextMissOdds(game *Game) (float64, float64) {
 	return 1.0 + (ships1/(total))*1.5, 1.0 + (ships0/(total))*1.5
 }
 
+func (oe *OddsEngine) CalcSpinOdds(game *Game) (float64, float64) {
+	return 1.8, 1.8 // 50/50 with house edge
+}
+
 func (oe *OddsEngine) CalcFirstBloodOdds(curHit0, curHit1 int) (float64, float64) {
 	if curHit0 == 0 && curHit1 == 0 {
 		return 2.0, 2.0
