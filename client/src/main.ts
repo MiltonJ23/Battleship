@@ -39,7 +39,8 @@ let forfeitWin = false;
 let zoneReady = false;
 let zoneMode = false;
 
-let chatMessages: { from: string; text: string; scope: string }[] = [];
+let chatMessages: { id?: string; from: string; text: string; scope: string; replyTo?: string; replySnip?: string }[] = [];
+let replyTarget: { id: string; from: string; text: string } | null = null;
 
 let ws: WebSocket;
 
@@ -224,14 +225,38 @@ function handleMessage(msg: any) {
 
     case "chat_history":
       chatMessages = (msg.messages || [])
-        .map((m: any) => ({ from: m.from, text: m.text, scope: "lobby" }))
+        .map((m: any) => ({ id: m.id, from: m.from, text: m.text, scope: "lobby", replyTo: m.replyTo || undefined }))
         .concat(chatMessages.filter((m) => m.scope !== "lobby"));
       renderChatList();
       break;
 
     case "chat":
-      chatMessages.push({ from: msg.from, text: msg.text, scope: msg.scope || "lobby" });
+      chatMessages.push({
+        id: msg.id,
+        from: msg.from,
+        text: msg.text,
+        scope: msg.scope || "lobby",
+        replyTo: msg.replyTo || undefined,
+        replySnip: msg.replySnip || undefined,
+      });
       if (chatMessages.length > 150) chatMessages.shift();
+      renderChatList();
+      break;
+
+    case "mention":
+      audio.play("hit");
+      const mentionText = msg.text.slice(0, 60) + (msg.text.length > 60 ? "…" : "");
+      const t = document.createElement("div");
+      t.className = "toast toast-mention";
+      t.innerHTML = `🔔 <strong>${esc(msg.from)}</strong> t'a mentionné<br/><em>${esc(mentionText)}</em>`;
+      t.onclick = () => {
+        if (screen === "battle" || screen === "placement") return;
+        const el = document.getElementById("chat-messages");
+        if (el) el.scrollTop = el.scrollHeight;
+      };
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 3500);
+      if (chatMessages.length < 150) chatMessages.push({ from: msg.from, text: msg.text, scope: "lobby" });
       renderChatList();
       break;
 
@@ -823,18 +848,86 @@ function renderChatList() {
     joinEl.innerHTML = chatMessages
       .filter((m) => m.scope === "lobby")
       .slice(-15)
-      .map((m) => `<div class="chat-msg"><span class="chat-from">${esc(m.from)}</span> ${esc(m.text)}</div>`)
+      .map((m) => renderChatBubble(m))
       .join("") || '<p class="empty-msg">Silence radio pour le moment...</p>';
     joinEl.scrollTop = joinEl.scrollHeight;
   }
   const el = document.getElementById("chat-messages");
   if (!el) return;
   const scope = screen === "battle" || screen === "placement" ? "game" : "lobby";
-  el.innerHTML = chatMessages
-    .filter((m) => m.scope === scope)
-    .map((m) => `<div class="chat-msg ${m.from === myName ? "mine" : ""}"><span class="chat-from">${esc(m.from)}</span> ${esc(m.text)}</div>`)
-    .join("");
+  const msgs = chatMessages.filter((m) => m.scope === scope);
+  el.innerHTML = msgs.map((m, idx) => renderChatBubble(m, idx)).join("");
   el.scrollTop = el.scrollHeight;
+
+  el.querySelectorAll(".chat-reply-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const msgEl = (btn as HTMLElement).closest(".chat-msg") as HTMLElement;
+      const idx = parseInt(msgEl?.dataset.i || "0");
+      const m = msgs[idx];
+      if (m) replyTarget = { id: m.id || "", from: m.from, text: m.text };
+      setupReplyBar();
+    });
+  });
+
+  el.querySelectorAll(".chat-mention").forEach((span) => {
+    span.addEventListener("click", () => {
+      const name = span.getAttribute("data-name") || "";
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].from === name) {
+          const target = el.children[i] as HTMLElement;
+          if (target) {
+            target.scrollIntoView({ behavior: "smooth", block: "center" });
+            target.classList.add("msg-flash");
+            setTimeout(() => target.classList.remove("msg-flash"), 1800);
+          }
+          return;
+        }
+      }
+      toast(`${name} n'a pas de message récent ici`);
+    });
+  });
+}
+
+function renderChatBubble(m: any, idx?: number): string {
+  const isMine = m.from === myName;
+  const replyHtml = m.replyTo
+    ? `<div class="reply-quote"><span class="reply-quote-bar"></span><span class="reply-quote-text">${esc(m.replySnip || "")}</span></div>`
+    : "";
+  const textHtml = renderMentions(m.text);
+  const idxAttr = idx !== undefined ? ` data-i="${idx}"` : "";
+  return `<div class="chat-msg ${isMine ? "mine" : ""}"${idxAttr}>
+    ${replyHtml}
+    <span class="chat-from">${esc(m.from)}</span>
+    <span class="chat-text">${textHtml}</span>
+    <button class="chat-reply-btn" title="Répondre">↩</button>
+  </div>`;
+}
+
+function renderMentions(text: string): string {
+  return text.replace(/(^| )@([a-zA-Z0-9_-]+)/g,
+    (_, sp, name) => `${sp}<span class="chat-mention" data-name="${escAttr(name)}">@${esc(name)}</span>`);
+}
+
+function setupReplyBar() {
+  document.getElementById("reply-bar")?.remove();
+  if (!replyTarget) return;
+  const panel = document.querySelector(".chat-input")?.parentElement;
+  if (!panel) return;
+  const bar = document.createElement("div");
+  bar.id = "reply-bar";
+  bar.className = "reply-bar";
+  bar.innerHTML = `
+    <div class="reply-bar-top"></div>
+    <span class="reply-bar-label">Répondre à <strong>${esc(replyTarget.from)}</strong></span>
+    <span class="reply-bar-snip">${esc(replyTarget.text.slice(0, 50))}${replyTarget.text.length > 50 ? "…" : ""}</span>
+    <button class="reply-bar-cancel">✕</button>
+  `;
+  panel.insertBefore(bar, panel.firstChild);
+  bar.querySelector(".reply-bar-cancel")!.addEventListener("click", () => {
+    replyTarget = null;
+    setupReplyBar();
+  });
 }
 
 function setupChatInput() {
@@ -844,13 +937,14 @@ function setupChatInput() {
   const sendChat = () => {
     const text = inp.value.trim();
     if (!text) return;
-    send({ type: "chat", text });
+    const payload: any = { type: "chat", text };
+    if (replyTarget) { payload.replyTo = replyTarget.id; replyTarget = null; setupReplyBar(); }
+    send(payload);
     inp.value = "";
   };
   (btn as HTMLElement).onclick = sendChat;
-  inp.onkeydown = (e) => {
-    if (e.key === "Enter") sendChat();
-  };
+  inp.onkeydown = (e) => { if (e.key === "Enter") sendChat(); };
+  setupReplyBar();
 }
 
 let toastTimer: ReturnType<typeof setTimeout>;

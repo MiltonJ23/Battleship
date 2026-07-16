@@ -464,10 +464,23 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 
 	case "chat":
 		text := getStr("text")
+		replyTo := getStr("replyTo")
 		if c.Name == "" || text == "" || len(text) > 300 {
 			return
 		}
-		chatMsg := map[string]interface{}{"type": "chat", "from": c.Name, "text": text}
+		var replySnip string
+		if replyTo != "" {
+			replySnip = h.store.GetChatSnippet(replyTo)
+		}
+		msgID := h.store.AppendChat(c.Name, text, time.Now().Unix(), replyTo)
+		chatMsg := map[string]interface{}{
+			"type":      "chat",
+			"id":        msgID,
+			"from":      c.Name,
+			"text":      text,
+			"replyTo":   replyTo,
+			"replySnip": replySnip,
+		}
 		if c.GameID != "" {
 			chatMsg["scope"] = "game"
 			game := h.games[c.GameID]
@@ -480,7 +493,6 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 			}
 		} else {
 			chatMsg["scope"] = "lobby"
-			h.store.AppendChat(c.Name, text, time.Now().Unix())
 			for cl := range h.conns {
 				if cl.Name == "" {
 					cl.sendJSON(chatMsg)
@@ -491,8 +503,36 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 					cl.sendJSON(chatMsg)
 				}
 			}
+			if mentioned := parseMention(text); mentioned != "" {
+				if mc, ok := h.clients[mentioned]; ok {
+					mc.sendJSON(map[string]interface{}{
+						"type": "mention",
+						"from": c.Name,
+						"text": text,
+					})
+				}
+			}
 		}
 	}
+}
+
+func parseMention(text string) string {
+	for i := 0; i < len(text); i++ {
+		if text[i] == '@' && (i == 0 || text[i-1] == ' ') {
+			end := i + 1
+			for end < len(text) && isNameChar(text[end]) {
+				end++
+			}
+			if end > i+1 {
+				return text[i+1 : end]
+			}
+		}
+	}
+	return ""
+}
+
+func isNameChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'
 }
 
 const SpinCost = 10

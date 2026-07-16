@@ -431,7 +431,9 @@ input:focus {
   animation: fadeUp 0.25s ease-out;
   align-self: flex-start;
   max-width: 90%;
+  position: relative;
 }
+.chat-msg:hover .chat-reply-btn { opacity: 1; }
 .chat-msg.mine {
   align-self: flex-end;
   background: rgba(0, 119, 255, 0.25);
@@ -442,6 +444,116 @@ input:focus {
   margin-right: 5px;
 }
 .chat-msg.mine .chat-from { color: var(--gold); }
+
+.chat-mention {
+  background: rgba(0, 240, 255, 0.15);
+  color: var(--cyan);
+  border-radius: 5px;
+  padding: 1px 5px;
+  cursor: pointer;
+  font-weight: 700;
+  transition: background 0.15s;
+}
+.chat-mention:hover {
+  background: rgba(0, 240, 255, 0.4);
+  text-decoration: underline;
+}
+.chat-msg.mine .chat-mention {
+  background: rgba(255, 215, 0, 0.15);
+  color: var(--gold);
+}
+.chat-msg.mine .chat-mention:hover { background: rgba(255, 215, 0, 0.4); }
+
+.msg-flash {
+  animation: msgFlash 0.6s ease-out 3;
+}
+@keyframes msgFlash {
+  0%, 100% { background: rgba(0, 40, 80, 0.35); }
+  50% { background: rgba(0, 240, 255, 0.3); box-shadow: 0 0 14px var(--cyan-dim); }
+}
+
+.chat-reply-btn {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  opacity: 0;
+  background: rgba(0, 240, 255, 0.2);
+  border: none;
+  color: var(--cyan);
+  font-size: 12px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: opacity 0.2s, background 0.2s;
+}
+.chat-reply-btn:hover { background: rgba(0, 240, 255, 0.4); }
+
+.reply-quote {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.reply-quote-bar {
+  width: 2px;
+  height: 14px;
+  background: var(--cyan-dim);
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+.reply-quote-text {
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reply-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(0, 160, 220, 0.1);
+  border-left: 3px solid var(--cyan);
+  border-radius: 0 8px 8px 0;
+  margin-bottom: 8px;
+  animation: fadeUp 0.2s ease-out;
+}
+.reply-bar-label {
+  font-size: 12px;
+  color: var(--cyan);
+  white-space: nowrap;
+}
+.reply-bar-snip {
+  font-size: 12px;
+  color: var(--text-dim);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reply-bar-cancel {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.reply-bar-cancel:hover { color: var(--red); }
+
+.toast-mention {
+  cursor: pointer;
+  border-color: rgba(255, 215, 0, 0.5);
+  box-shadow: 0 0 20px rgba(255, 215, 0, 0.3);
+}
 
 .chat-input {
   display: flex;

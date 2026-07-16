@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,9 +24,10 @@ type PlayerRecord struct {
 }
 
 type ChatRecord struct {
-	From string `json:"from"`
-	Text string `json:"text"`
-	At   int64  `json:"at"`
+	From    string `json:"from"`
+	Text    string `json:"text"`
+	At      int64  `json:"at"`
+	ReplyTo string `json:"replyTo,omitempty"`
 }
 
 type Store struct {
@@ -157,13 +159,15 @@ func (s *Store) GetLeaderboard(limit int) []*PlayerRecord {
 
 const chatHistoryMax = 200
 
-func (s *Store) AppendChat(from, text string, at int64) {
+func (s *Store) AppendChat(from, text string, at int64, replyTo string) string {
+	var msgID string
 	s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketChat)
 		id, _ := b.NextSequence()
 		key := make([]byte, 8)
 		binary.BigEndian.PutUint64(key, id)
-		v, _ := json.Marshal(&ChatRecord{From: from, Text: text, At: at})
+		msgID = fmt.Sprintf("%d", id)
+		v, _ := json.Marshal(&ChatRecord{From: from, Text: text, At: at, ReplyTo: replyTo})
 		if err := b.Put(key, v); err != nil {
 			return err
 		}
@@ -178,21 +182,55 @@ func (s *Store) AppendChat(from, text string, at int64) {
 		}
 		return nil
 	})
+	return msgID
 }
 
-func (s *Store) GetRecentChat(limit int) []*ChatRecord {
-	var msgs []*ChatRecord
+func (s *Store) GetChatSnippet(id string) string {
+	if id == "" {
+		return ""
+	}
+	var key [8]byte
+	var num uint64
+	fmt.Sscanf(id, "%d", &num)
+	binary.BigEndian.PutUint64(key[:], num)
+	var snippet string
+	s.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket(bucketChat).Get(key[:])
+		if v == nil {
+			return nil
+		}
+		var m ChatRecord
+		if json.Unmarshal(v, &m) == nil {
+			t := m.Text
+			if len(t) > 50 {
+				t = t[:50] + "…"
+			}
+			snippet = t
+		}
+		return nil
+	})
+	return snippet
+}
+
+func (s *Store) GetRecentChat(limit int) []map[string]interface{} {
+	var msgs []map[string]interface{}
 	s.db.View(func(tx *bolt.Tx) error {
 		c := tx.Bucket(bucketChat).Cursor()
 		for k, v := c.Last(); k != nil && len(msgs) < limit; k, v = c.Prev() {
 			var m ChatRecord
 			if json.Unmarshal(v, &m) == nil {
-				msgs = append(msgs, &m)
+				id := binary.BigEndian.Uint64(k)
+				msgs = append(msgs, map[string]interface{}{
+					"id":       fmt.Sprintf("%d", id),
+					"from":     m.From,
+					"text":     m.Text,
+					"at":       m.At,
+					"replyTo":  m.ReplyTo,
+				})
 			}
 		}
 		return nil
 	})
-	// reverse to chronological order
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
