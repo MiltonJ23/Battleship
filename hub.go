@@ -346,6 +346,24 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 		game.mu.Unlock()
 		logInfo("spin", "game=%s spinner=%s beneficiary=%s cost=%d", c.GameID, c.Name, game.Players[beneficiaryIdx], SpinCost)
 
+		// resolve spin winner bets
+		spinBets := game.Bets.ResolveByEvent(BetSpinWinner, BetPick(beneficiaryIdx+1))
+		for _, b := range spinBets {
+			if b.Won && b.Player != "banque" {
+				h.store.AddPoints(b.Player, int(float64(b.Amount)*b.Odds))
+				if pc, ok := h.clients[b.Player]; ok {
+					pc.sendJSON(map[string]interface{}{
+						"type":   "bet_won",
+						"kind":   string(b.Kind),
+						"amount": int(float64(b.Amount) * b.Odds),
+					})
+				}
+			}
+		}
+		if len(spinBets) > 0 {
+			h.broadcastToSpectators(game, map[string]interface{}{"type": "bets_resolved", "kind": "spin_winner", "bets": spinBets})
+		}
+
 		newRec := h.store.GetOrCreate(c.Name)
 		for i, name := range game.Players {
 			if pc, ok := h.clients[name]; ok {
@@ -448,26 +466,26 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 		if res.Hit {
 			resolved := game.Bets.ResolveByEvent(BetNextHit, BetPick(playerIdx+1))
 			for _, b := range resolved {
-				if b.Won {
-					gain := int(float64(b.Amount) * b.Odds)
-					if b.Player != "banque" {
-						h.store.AddPoints(b.Player, gain)
+				if b.Won && b.Player != "banque" {
+					h.store.AddPoints(b.Player, int(float64(b.Amount)*b.Odds))
+					if pc, ok := h.clients[b.Player]; ok {
+						pc.sendJSON(map[string]interface{}{"type": "bet_won", "kind": "next_hit", "amount": int(float64(b.Amount) * b.Odds)})
 					}
 				}
-				betResolved = append(betResolved, b)
 			}
+			betResolved = append(betResolved, resolved...)
 		}
 		if res.Sunk {
 			resolved := game.Bets.ResolveByEvent(BetNextSunk, BetPick(playerIdx+1))
 			for _, b := range resolved {
-				if b.Won {
-					gain := int(float64(b.Amount) * b.Odds)
-					if b.Player != "banque" {
-						h.store.AddPoints(b.Player, gain)
+				if b.Won && b.Player != "banque" {
+					h.store.AddPoints(b.Player, int(float64(b.Amount)*b.Odds))
+					if pc, ok := h.clients[b.Player]; ok {
+						pc.sendJSON(map[string]interface{}{"type": "bet_won", "kind": "next_sunk", "amount": int(float64(b.Amount) * b.Odds)})
 					}
 				}
-				betResolved = append(betResolved, b)
 			}
+			betResolved = append(betResolved, resolved...)
 		}
 
 		for i, name := range game.Players {

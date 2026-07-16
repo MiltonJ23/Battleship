@@ -330,7 +330,9 @@ function handleMessage(msg: any) {
       break;
 
     case "bet_won":
+      myPoints += msg.amount || 0;
       toast(`💰 Pari gagné ! +${msg.amount} pts (${msg.kind})`);
+      if (screen === "lobby") render();
       break;
 
     case "error":
