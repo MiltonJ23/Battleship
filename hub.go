@@ -462,6 +462,56 @@ func (h *Hub) handleMessage(c *Client, msgType string, raw map[string]json.RawMe
 		}
 		logWarn("client", "name=%q addr=%s level=%s msg=%s", c.Name, c.Addr, lvl, text)
 
+	case "borrow":
+		if c.Name == "" {
+			return
+		}
+		if h.store.GetLoan(c.Name) != nil {
+			c.sendJSON(map[string]string{"type": "error", "message": "Tu as déjà un prêt en cours. Rembourse-le d'abord."})
+			return
+		}
+		amount := getInt("amount")
+		rate := getInt("rate")
+		installment := getInt("installment")
+		if amount < 20 || amount > 500 {
+			c.sendJSON(map[string]string{"type": "error", "message": "Montant entre 20 et 500 pts"})
+			return
+		}
+		if rate < 5 || rate > 50 {
+			c.sendJSON(map[string]string{"type": "error", "message": "Taux entre 5 et 50%"})
+			return
+		}
+		if installment < 0 || installment > amount || (installment > 0 && installment < 5) {
+			c.sendJSON(map[string]string{"type": "error", "message": "Versement invalide"})
+			return
+		}
+		h.store.ApproveLoan(c.Name, amount, rate, installment)
+		rec := h.store.GetOrCreate(c.Name)
+		c.sendJSON(map[string]interface{}{
+			"type":        "loan_approved",
+			"amount":      amount,
+			"rate":        rate,
+			"installment": installment,
+			"newPoints":   rec.Points,
+		})
+		logInfo("loan", "approved player=%s amount=%d rate=%d%% installment=%d", c.Name, amount, rate, installment)
+		h.broadcastLobby()
+
+	case "loan_status":
+		if c.Name == "" {
+			return
+		}
+		if rec := h.store.GetLoan(c.Name); rec != nil {
+			c.sendJSON(map[string]interface{}{
+				"type":        "loan_status",
+				"principal":   rec.Principal,
+				"remaining":   rec.Remaining,
+				"rate":        rec.Rate,
+				"installment": rec.Installment,
+				"repaid":      rec.Repaid,
+			})
+		}
+
 	case "chat":
 		text := getStr("text")
 		replyTo := getStr("replyTo")
@@ -545,6 +595,13 @@ func (h *Hub) finishGame(game *Game, winnerIdx int, gameID string) {
 	h.store.UpdateAfterGame(winner, loser, game.Wager)
 	wRec := h.store.GetOrCreate(winner)
 	lRec := h.store.GetOrCreate(loser)
+
+	// loan commission on win
+	collected, paid := h.store.CollectCommission(winner, game.Wager)
+	if collected > 0 {
+		logInfo("loan", "commission winner=%s collected=%d paid=%v", winner, collected, paid)
+		wRec = h.store.GetOrCreate(winner) // refresh after deduction
+	}
 
 	for _, name := range game.Players {
 		if pc, ok := h.clients[name]; ok {

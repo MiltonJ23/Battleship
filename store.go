@@ -14,6 +14,7 @@ import (
 var (
 	bucketPlayers = []byte("players")
 	bucketChat    = []byte("chat")
+	bucketLoans   = []byte("loans")
 )
 
 type PlayerRecord struct {
@@ -43,6 +44,7 @@ func NewStore(file string) *Store {
 	db.Update(func(tx *bolt.Tx) error {
 		tx.CreateBucketIfNotExists(bucketPlayers)
 		tx.CreateBucketIfNotExists(bucketChat)
+		tx.CreateBucketIfNotExists(bucketLoans)
 		return nil
 	})
 	s := &Store{db: db}
@@ -210,6 +212,112 @@ func (s *Store) GetChatSnippet(id string) string {
 		return nil
 	})
 	return snippet
+}
+
+// ─── loan system ─────────────────────────────────────────────
+
+type LoanRecord struct {
+	Player      string `json:"player"`
+	Principal   int    `json:"principal"`   // amount borrowed
+	Remaining   int    `json:"remaining"`   // left to repay
+	Rate        int    `json:"rate"`        // extra % cost
+	Installment int    `json:"installment"` // 0 = lump sum, >0 = per-win auto-deduct
+	Repaid      int    `json:"repaid"`
+}
+
+// ApproveLoan creates a loan and credits the player immediately.
+func (s *Store) ApproveLoan(player string, amount, rate, installment int) {
+	s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketLoans)
+		// only one active loan per player
+		if b.Get([]byte(player)) != nil {
+			return nil
+		}
+		rec := &LoanRecord{Player: player, Principal: amount, Remaining: amount + (amount * rate / 100), Rate: rate, Installment: installment}
+		v, _ := json.Marshal(rec)
+		b.Put([]byte(player), v)
+
+		pb := tx.Bucket(bucketPlayers)
+		if pv := pb.Get([]byte(player)); pv != nil {
+			var p PlayerRecord
+			json.Unmarshal(pv, &p)
+			p.Points += amount
+			nv, _ := json.Marshal(&p)
+			pb.Put([]byte(player), nv)
+		}
+		return nil
+	})
+}
+
+func (s *Store) GetLoan(player string) *LoanRecord {
+	var rec LoanRecord
+	s.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket(bucketLoans).Get([]byte(player))
+		if v != nil {
+			json.Unmarshal(v, &rec)
+		}
+		return nil
+	})
+	if rec.Player == "" {
+		return nil
+	}
+	return &rec
+}
+
+// CollectCommission deducts from winner's wager toward loan repayment.
+// Returns (collected, loanFullyRepaid).
+func (s *Store) CollectCommission(winner string, wager int) (int, bool) {
+	collected := 0
+	paid := false
+	s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketLoans)
+		raw := b.Get([]byte(winner))
+		if raw == nil {
+			return nil
+		}
+		var rec LoanRecord
+		json.Unmarshal(raw, &rec)
+		if rec.Remaining <= 0 {
+			b.Delete([]byte(winner))
+			return nil
+		}
+		var take int
+		if rec.Installment > 0 {
+			take = rec.Installment
+		} else {
+			take = rec.Remaining // lump sum
+		}
+		if take > wager {
+			take = wager
+		}
+		if take > rec.Remaining {
+			take = rec.Remaining
+		}
+		rec.Remaining -= take
+		rec.Repaid += take
+		if rec.Remaining <= 0 {
+			b.Delete([]byte(winner))
+			paid = true
+		} else {
+			v, _ := json.Marshal(&rec)
+			b.Put([]byte(winner), v)
+		}
+		collected = take
+
+		pb := tx.Bucket(bucketPlayers)
+		if pv := pb.Get([]byte(winner)); pv != nil {
+			var p PlayerRecord
+			json.Unmarshal(pv, &p)
+			p.Points -= take
+			if p.Points < 0 {
+				p.Points = 0
+			}
+			nv, _ := json.Marshal(&p)
+			pb.Put([]byte(winner), nv)
+		}
+		return nil
+	})
+	return collected, paid
 }
 
 func (s *Store) GetRecentChat(limit int) []map[string]interface{} {

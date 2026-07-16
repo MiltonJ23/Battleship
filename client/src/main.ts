@@ -41,6 +41,7 @@ let zoneMode = false;
 
 let chatMessages: { id?: string; from: string; text: string; scope: string; replyTo?: string; replySnip?: string }[] = [];
 let replyTarget: { id: string; from: string; text: string } | null = null;
+let activeLoan: { principal: number; remaining: number; rate: number; installment: number; repaid: number } | null = null;
 
 let ws: WebSocket;
 
@@ -156,6 +157,18 @@ function handleMessage(msg: any) {
       }
       break;
     }
+
+    case "loan_approved":
+      if (typeof msg.newPoints === "number") myPoints = msg.newPoints;
+      activeLoan = { principal: msg.amount, remaining: msg.amount + (msg.amount * msg.rate / 100), rate: msg.rate, installment: msg.installment || 0, repaid: 0 };
+      toast(`🏦 Prêt de ${msg.amount} pts accordé ! Taux: ${msg.rate}%. Nouveau solde: ${myPoints} pts`);
+      if (screen === "lobby") render();
+      break;
+
+    case "loan_status":
+      activeLoan = { principal: msg.principal, remaining: msg.remaining, rate: msg.rate, installment: msg.installment || 0, repaid: msg.repaid };
+      if (screen === "lobby") render();
+      break;
 
     case "game_over":
       iWon = !!msg.won;
@@ -337,6 +350,7 @@ function renderLobby() {
           <span class="badge-points">💰 ${myPoints} pts</span>
           <span class="badge-record">${myWins}V / ${myLosses}D</span>
         </div>
+        ${renderLoanBadge()}
       </header>
       <div class="lobby-body">
         <section class="panel players-panel">
@@ -399,6 +413,19 @@ function renderLobby() {
 
   renderChatList();
   setupChatInput();
+
+  const borrowBtn = document.getElementById("borrow-btn");
+  if (borrowBtn) borrowBtn.onclick = showBorrowModal;
+  send({ type: "loan_status" });
+}
+
+function renderLoanBadge(): string {
+  if (!activeLoan) {
+    if (myPoints < 50) return `<div class="loan-cta"><button id="borrow-btn" class="btn-spin">🏦 Emprunter à la banque</button></div>`;
+    return "";
+  }
+  const pct = Math.round((1 - activeLoan.remaining / (activeLoan.principal * (1 + activeLoan.rate / 100))) * 100);
+  return `<div class="loan-cta"><span class="loan-status">🏦 Dette: ${activeLoan.remaining} pts (${pct}% remboursé${activeLoan.installment > 0 ? ` · -${activeLoan.installment}/victoire` : " · en une fois"})</span></div>`;
 }
 
 function showWagerDialog(target: string) {
@@ -433,6 +460,60 @@ function showWagerDialog(target: string) {
     const raw = +(document.getElementById("wager-input") as HTMLInputElement).value || 0;
     const w = Math.max(0, Math.min(myPoints, raw));
     send({ type: "challenge", target, wager: w });
+    dlg.remove();
+  };
+}
+
+function showBorrowModal() {
+  if (activeLoan) { toast("Tu as déjà un prêt en cours !"); return; }
+  closeModals();
+  const dlg = document.createElement("div");
+  dlg.className = "modal-overlay";
+  dlg.innerHTML = `
+    <div class="modal">
+      <h3>🏦 Banque du Port</h3>
+      <p style="color:var(--text-dim);font-size:14px">Solde actuel : ${myPoints} pts</p>
+      <label>Montant</label>
+      <div class="wager-quick">
+        <button data-m="50">50 pts</button>
+        <button data-m="100">100 pts</button>
+        <button data-m="200">200 pts</button>
+        <button data-m="500">500 pts</button>
+      </div>
+      <input id="loan-amount" type="number" min="20" max="500" value="100" inputmode="numeric" />
+      <label>Taux d'intérêt</label>
+      <select id="loan-rate">
+        <option value="10">10% — standard</option>
+        <option value="20">20% — rapide</option>
+        <option value="35">35% — usurier</option>
+      </select>
+      <label>Remboursement</label>
+      <select id="loan-installment">
+        <option value="0">En une fois (sur prochaine victoire)</option>
+        <option value="10">10 pts par victoire</option>
+        <option value="25">25 pts par victoire</option>
+        <option value="50">50 pts par victoire</option>
+      </select>
+      <p style="color:var(--red);font-size:12px">Les versements fractionnés coûtent +10% d'intérêts</p>
+      <div class="modal-btns">
+        <button id="loan-cancel">Annuler</button>
+        <button id="loan-ok" class="btn-primary">EMPRUNTER</button>
+      </div>
+    </div>`;
+  document.body.appendChild(dlg);
+  dlg.onclick = (e) => e.target === dlg && dlg.remove();
+  dlg.querySelectorAll(".wager-quick button").forEach((b) => {
+    (b as HTMLElement).onclick = () => {
+      (document.getElementById("loan-amount") as HTMLInputElement).value = (b as HTMLElement).dataset.m!;
+    };
+  });
+  document.getElementById("loan-cancel")!.onclick = () => dlg.remove();
+  document.getElementById("loan-ok")!.onclick = () => {
+    const amount = +(document.getElementById("loan-amount") as HTMLInputElement).value || 100;
+    let rate = +(document.getElementById("loan-rate") as HTMLSelectElement).value || 10;
+    const installment = +(document.getElementById("loan-installment") as HTMLSelectElement).value || 0;
+    if (installment > 0) rate += 10; // installment penalty
+    send({ type: "borrow", amount, rate, installment });
     dlg.remove();
   };
 }
@@ -596,9 +677,26 @@ function renderPlacementGrid() {
     for (let c = 0; c < GRID; c++) {
       const cell = document.createElement("div");
       cell.className = "gcell";
-      if (ownGrid[r][c] === 1) cell.classList.add("ship");
+      if (ownGrid[r][c] === 1) { cell.classList.add("ship"); cell.classList.add("removable"); }
       cell.addEventListener("pointerenter", () => showPreview(r, c));
       cell.addEventListener("click", () => {
+        // tap on own ship = remove it
+        if (ownGrid[r][c] === 1) {
+          const shipIdx = myShips.findIndex((s, idx) => {
+            for (let k = 0; k < SHIP_SIZES[idx]; k++) {
+              const sr = s.horiz ? s.row : s.row + k;
+              const sc = s.horiz ? s.col + k : s.col;
+              if (sr === r && sc === c) return true;
+            }
+            return false;
+          });
+          if (shipIdx >= 0) {
+            myShips.splice(shipIdx, 1);
+            audio.play("miss");
+            render();
+          }
+          return;
+        }
         if (!size) return;
         if (canPlace(r, c, size, shipOrientation)) {
           myShips.push({ row: r, col: c, horiz: shipOrientation });
