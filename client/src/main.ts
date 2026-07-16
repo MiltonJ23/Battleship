@@ -53,7 +53,15 @@ function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onopen = () => {
-    if (myName && screen !== "join") send({ type: "join", name: myName });
+    if (myName && screen !== "join") {
+      send({ type: "join", name: myName });
+    } else {
+      const saved = sessionStorage.getItem("bs_name");
+      if (saved && screen === "join") {
+        myName = saved;
+        send({ type: "join", name: saved });
+      }
+    }
   };
   ws.onmessage = (e) => {
     try {
@@ -388,6 +396,11 @@ function renderJoin() {
   input.onkeydown = (e) => {
     if (e.key === "Enter") go();
   };
+  // auto-join if name already saved
+  if (saved) {
+    myName = saved;
+    setTimeout(() => send({ type: "join", name: saved }), 100);
+  }
   input.focus();
   renderChatList();
 }

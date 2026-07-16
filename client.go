@@ -31,6 +31,7 @@ func (c *Client) sendJSON(v interface{}) {
 func (c *Client) readPump() {
 	defer func() {
 		recover()
+		close(c.Send)
 	}()
 	c.Conn.SetReadLimit(4096)
 	c.Conn.SetReadDeadline(time.Now().Add(120 * time.Second))
