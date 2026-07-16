@@ -259,6 +259,7 @@ function handleMessage(msg: any) {
       specEvents = msg.events || [];
       specTurnName = msg.turnName;
       specGameId = msg.gameId || specGameId;
+      specBalance = 0;
       screen = "spectate";
       render();
       break;
@@ -326,11 +327,15 @@ function handleMessage(msg: any) {
       break;
 
     case "bet_placed":
+      specBalance -= msg.amount;
+      if (screen === "spectate") renderSpecBalance();
       toast(`🎲 Pari placé : ${msg.kind} → mise ${msg.amount} pts, cote ${msg.odds}x`);
       break;
 
     case "bet_won":
       myPoints += msg.amount || 0;
+      specBalance += msg.amount || 0;
+      if (screen === "spectate") renderSpecBalance();
       toast(`💰 Pari gagné ! +${msg.amount} pts (${msg.kind})`);
       if (screen === "lobby") render();
       break;
@@ -1175,6 +1180,7 @@ let specEvents: any[] = [];
 let specTurnName = "";
 let specOdds: { kind: string; odds0: number; odds1: number } | null = null;
 let specGameId = "";
+let specBalance = 0; // running bet P&L during spectate
 
 function renderSpectate() {
   app.innerHTML = `<div class="spectate-screen">
@@ -1184,16 +1190,16 @@ function renderSpectate() {
       <button id="unspectate-btn" class="btn-danger">✕ Quitter</button>
     </header>
     <div class="turn-indicator">Tour de ${esc(specTurnName)}</div>
-    <div class="spec-grids-layout">
-      <div class="spec-grid-col">
-        <h3 class="spec-col-title">🛡️ ${esc(specP1)}</h3>
-        <div id="spec-grid-1" class="grid spec-grid"></div>
-      </div>
-      <div class="spec-grid-col">
-        <h3 class="spec-col-title">🎯 ${esc(specP2)}</h3>
-        <div id="spec-grid-2" class="grid spec-grid"></div>
-        <div class="spec-events card">
-          <h3>📡 Derniers événements</h3>
+    <div class="spec-grids-top">
+      <div class="battle-section"><h3>🛡️ ${esc(specP1)}</h3><div id="spec-grid-1" class="grid spec-grid"></div></div>
+      <div class="battle-section"><h3>🎯 ${esc(specP2)}</h3><div id="spec-grid-2" class="grid spec-grid"></div></div>
+    </div>
+    <div class="spec-bottom-row">
+      <div class="spec-pnl card">
+        <h3>📊 Mon bilan</h3>
+        <div id="spec-balance" class="spec-balance">+0 pts</div>
+        <div class="spec-events">
+          <h4>Événements</h4>
           <div id="spec-events" class="spec-event-list"></div>
         </div>
       </div>
@@ -1213,13 +1219,13 @@ function renderSpectate() {
           </div>
           <div id="spec-bet-btns" class="spec-bet-btns"></div>
         </div>
-        <div class="chat-panel panel">
-          <h3>💬 Chat spectateurs</h3>
-          <div id="chat-messages" class="chat-msgs"></div>
-          <div class="chat-input">
-            <input id="chat-inp" type="text" placeholder="Votre message..." maxlength="300" autocomplete="off" />
-            <button id="chat-send-btn">➤</button>
-          </div>
+      </div>
+      <div class="chat-panel panel">
+        <h3>💬 Chat spectateurs</h3>
+        <div id="chat-messages" class="chat-msgs"></div>
+        <div class="chat-input">
+          <input id="chat-inp" type="text" placeholder="Votre message..." maxlength="300" autocomplete="off" />
+          <button id="chat-send-btn">➤</button>
         </div>
       </div>
     </div>
@@ -1228,6 +1234,7 @@ function renderSpectate() {
   document.getElementById("unspectate-btn")!.onclick = () => { send({ type: "unspectate" }); screen = "lobby"; render(); };
   renderSpecEvents();
   renderSpecOdds();
+  renderSpecBalance();
   renderChatList();
   setupChatInput();
 }
@@ -1258,6 +1265,15 @@ function renderSpecEvents() {
     const icon = d.result === "hit" ? "🎯" : d.result === "sunk" ? "💥" : "💧";
     return `<div class="spec-event">${icon} <strong>${esc(name)}</strong> ${d.x},${d.y} ${d.ship||""}</div>`;
   }).join("");
+}
+
+function renderSpecBalance() {
+  const el = document.getElementById("spec-balance");
+  if (!el) return;
+  const cls = specBalance > 0 ? "gain" : specBalance < 0 ? "loss" : "";
+  const sign = specBalance >= 0 ? "+" : "";
+  el.textContent = sign + specBalance + " pts";
+  el.className = "spec-balance " + cls;
 }
 
 function renderSpecOdds() {

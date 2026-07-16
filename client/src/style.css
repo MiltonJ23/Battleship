@@ -1222,6 +1222,40 @@ select {
 
 /* ═══ SPECTATE / BETTING UI ═══ */
 
+.spec-grids-top {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+  width: 100%;
+  margin-bottom: 14px;
+}
+.spec-bottom-row {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1.3fr;
+  gap: 14px;
+  width: 100%;
+  max-width: 1100px;
+  align-items: start;
+}
+
+.spec-pnl {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.spec-balance {
+  font-family: "Orbitron", sans-serif;
+  font-size: 28px;
+  font-weight: 800;
+  text-align: center;
+  padding: 10px 0;
+  border-radius: 12px;
+  background: rgba(0, 40, 80, 0.4);
+}
+.spec-balance.gain { color: var(--green); }
+.spec-balance.loss { color: var(--red); }
+
 .spec-grids-layout {
   display: flex;
   gap: 16px;
@@ -1249,7 +1283,7 @@ select {
   flex-direction: column;
   gap: 12px;
 }
-.spec-grid { width: min(42vw, 340px); }
+.spec-grid { width: min(40vw, 300px); }
 
 /* ODD CARDS */
 .spec-odds-box {
@@ -1369,7 +1403,11 @@ select {
 }
 
 @media (max-width: 900px) {
-  .spec-grids-layout { flex-direction: column; align-items: center; }
-  .spec-grid { width: min(90vw, 400px); }
-  .spec-bet-col { max-width: 100%; width: 100%; }
+  .spec-bottom-row { grid-template-columns: 1fr; }
+  .spec-grid { width: min(80vw, 340px); }
+}
+
+@media (max-width: 500px) {
+  .spec-grid { width: min(76vw, 300px); }
+  .btn-bet { font-size: 13px; padding: 8px 12px; }
 }
