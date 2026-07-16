@@ -345,6 +345,9 @@ function render() {
     case "gameover":
       renderGameOver();
       break;
+    case "spectate":
+      renderSpectate();
+      break;
   }
 }
 
